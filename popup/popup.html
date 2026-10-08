@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ReLeet</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>ReLeet</h1>
+    <span id="summary" class="muted"></span>
+  </header>
+
+  <section id="pending-section" hidden>
+    <div class="section-head">
+      <h2>Rate new submissions</h2>
+      <button id="dismiss-all" type="button" class="link-btn">Dismiss all</button>
+    </div>
+    <ul id="pending-list" class="problem-list"></ul>
+  </section>
+
+  <section>
+    <h2>Due today</h2>
+    <ul id="due-list" class="problem-list"></ul>
+    <p id="due-empty" class="empty">Nothing due. Nice.</p>
+  </section>
+
+  <section>
+    <h2>Upcoming</h2>
+    <ul id="upcoming-list" class="problem-list"></ul>
+    <p id="upcoming-empty" class="empty">No upcoming reviews.</p>
+  </section>
+
+  <section>
+    <h2>Add a solved problem</h2>
+    <form id="add-form">
+      <input id="problem-input" type="text" placeholder="Title, slug, or LeetCode URL" required autocomplete="off">
+      <div class="rating-row" role="group" aria-label="How hard did it feel?">
+        <button type="submit" name="rating" value="easy" class="rating easy">Easy · 7d</button>
+        <button type="submit" name="rating" value="medium" class="rating medium">Medium · 3d</button>
+        <button type="submit" name="rating" value="hard" class="rating hard">Hard · 1d</button>
+      </div>
+      <p id="form-error" class="error" hidden></p>
+    </form>
+  </section>
+
+  <footer>
+    <span id="sync-status" class="muted"></span>
+    <span>
+      <button id="sync-now" type="button" class="link-btn" hidden>Sync now</button>
+      <button id="open-settings" type="button" class="link-btn">Settings</button>
+    </span>
+  </footer>
+
+  <template id="problem-template">
+    <li class="problem">
+      <div class="problem-main">
+        <a class="problem-title" target="_blank" rel="noopener"></a>
+        <span class="problem-meta muted"></span>
+      </div>
+      <div class="problem-actions"></div>
+    </li>
+  </template>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

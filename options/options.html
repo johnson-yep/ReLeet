@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ReLeet settings</title>
+  <link rel="stylesheet" href="../popup/popup.css">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <h1>ReLeet settings</h1>
+
+  <section>
+    <h2>GitHub submissions repo</h2>
+    <p class="muted">The public repo NeetCode pushes your accepted submissions to.</p>
+    <form id="repo-form">
+      <input id="repo-input" type="text" placeholder="owner/repo or https://github.com/owner/repo" autocomplete="off">
+      <button type="submit">Save</button>
+    </form>
+    <p id="repo-status" class="muted"></p>
+  </section>
+
+  <section>
+    <h2>Faster updates (optional)</h2>
+    <p class="muted">The repo is checked right after you submit on neetcode.io. Submissions made elsewhere are caught by
+      background polling. Without a token, GitHub allows 60 requests/hour, so that polling runs every 15 minutes
+      (and whenever you open the popup). With a token the limit is 5,000/hour and the repo is checked <strong>every minute</strong>.</p>
+    <p class="muted">Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>
+      with <em>Repository access: Public repositories (read-only)</em> and no extra permissions. It is stored only in this browser's extension storage.</p>
+    <form id="token-form">
+      <input id="token-input" type="password" placeholder="github_pat_…" autocomplete="off">
+      <button type="submit">Save token</button>
+      <button id="remove-token" type="button" hidden>Remove</button>
+    </form>
+    <p id="token-status" class="muted"></p>
+  </section>
+
+  <section>
+    <h2>Sync</h2>
+    <dl id="sync-info"></dl>
+    <div class="button-row">
+      <button id="sync-now" type="button">Sync now</button>
+      <button id="import-existing" type="button">Import existing problems</button>
+    </div>
+    <p class="muted">The first sync only records the latest commit, so older submissions are skipped.
+      Use <strong>Import existing problems</strong> to add every problem already in the repo to the popup for rating.</p>
+    <p id="action-status" class="muted"></p>
+  </section>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

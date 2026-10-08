@@ -1,0 +1,23 @@
+body {
+  width: auto;
+  max-width: 560px;
+  margin: 24px auto;
+  padding: 0 16px;
+  font-size: 14px;
+}
+
+h1 { font-size: 20px; margin-bottom: 8px; }
+
+#repo-form, #token-form { display: flex; gap: 8px; }
+#repo-form button, #token-form button { padding: 6px 14px; white-space: nowrap; }
+a { color: var(--accent); }
+
+.button-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.button-row button { padding: 6px 12px; }
+
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+
+.error { color: var(--hard); }
+.ok { color: var(--easy); }
