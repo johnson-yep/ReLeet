@@ -15,6 +15,7 @@ import {
 } from '../lib/storage.js';
 import { applySolve, recordReview, groupByDue, startOfDay, RATINGS } from '../lib/srs.js';
 import { parseProblemInput } from '../lib/problem.js';
+import { createReviewInvite } from '../lib/calendar.js';
 
 const $ = (id) => document.getElementById(id);
 const template = $('problem-template');
@@ -97,11 +98,31 @@ function renderProblem(problem, isDueToday) {
   const actions = isDueToday
     ? ratingButtons((rating) => review(problem.id, rating), 'Reviewed')
     : [button('⏰', 'icon-btn', () => makeDueNow(problem.id), 'Make due now (for testing notifications)')];
+  actions.push(
+    button(
+      '📅',
+      'icon-btn',
+      () => downloadCalendarInvite(problem),
+      `Add review on ${formatDate(problem.dueAt)} to a calendar`,
+    ),
+  );
   actions.push(button('✕', 'icon-btn', () => remove(problem), 'Delete'));
 
   const li = problemItem(problem, meta, actions);
   li.title = `Review date: ${formatDate(problem.dueAt)}`;
   return li;
+}
+
+function downloadCalendarInvite(problem) {
+  const { contents, filename } = createReviewInvite(problem);
+  const url = URL.createObjectURL(new Blob([contents], { type: 'text/calendar;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function renderList(listEl, emptyEl, items, renderItem) {

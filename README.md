@@ -14,6 +14,7 @@ A Chrome extension (Manifest V3, vanilla JS) for spaced repetition of LeetCode /
 | --- | --- |
 | `lib/srs.js` | Scheduling logic. Pure JS, no `chrome.*` (reusable elsewhere). |
 | `lib/problem.js` | Parse titles / slugs / URLs into problem ids. Pure JS. |
+| `lib/calendar.js` | Generate user-approved `.ics` review invites. Pure JS. |
 | `lib/github.js` | GitHub REST client (fetch only, public repos, no auth). |
 | `lib/storage.js` | `chrome.storage.local` wrapper. |
 | `lib/github-sync.js` | Detects new submissions since the last processed commit. |
@@ -27,6 +28,14 @@ A Chrome extension (Manifest V3, vanilla JS) for spaced repetition of LeetCode /
 Easy → 7 days, Medium → 3 days, Hard → 1 day. Review dates are whole days: a problem
 becomes due at local midnight of its review date. Rating a due problem in the popup
 (E / M / H) counts as a review and reschedules it.
+
+## Calendar invites
+
+Click 📅 beside a tracked problem to download a standard `.ics` calendar invite for its next review.
+The invite schedules a 30-minute review at 9:00 AM local time with a reminder 15 minutes beforehand.
+Open the file in Google Calendar, Apple Calendar, Outlook, or another calendar app and approve it there.
+ReLeet does not receive access to the calendar, and later rescheduling in ReLeet does not modify an
+invite that was already imported.
 
 ## GitHub sync
 
