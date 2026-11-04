@@ -9,41 +9,59 @@
 <body>
   <h1>ReLeet settings</h1>
 
-  <section>
-    <h2>GitHub submissions repo</h2>
-    <p class="muted">The public repo NeetCode pushes your accepted submissions to.</p>
-    <form id="repo-form">
-      <input id="repo-input" type="text" placeholder="owner/repo or https://github.com/owner/repo" autocomplete="off">
+  <section id="leetcode-section">
+    <h2>LeetCode</h2>
+    <p class="muted">When a submission on leetcode.com is Accepted, ReLeet asks right there how hard it felt.
+      It also checks your public recent accepted submissions every 15 minutes while Chrome is running,
+      which catches solves on other devices.</p>
+    <form id="username-form" class="inline-form">
+      <input id="username-input" type="text" placeholder="LeetCode username" autocomplete="off" spellcheck="false"
+        aria-label="LeetCode username">
       <button type="submit">Save</button>
     </form>
-    <p id="repo-status" class="muted"></p>
-  </section>
-
-  <section>
-    <h2>Faster updates (optional)</h2>
-    <p class="muted">The repo is checked right after you submit on neetcode.io. Submissions made elsewhere are caught by
-      background polling. Without a token, GitHub allows 60 requests/hour, so that polling runs every 15 minutes
-      (and whenever you open the popup). With a token the limit is 5,000/hour and the repo is checked <strong>every minute</strong>.</p>
-    <p class="muted">Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>
-      with <em>Repository access: Public repositories (read-only)</em> and no extra permissions. It is stored only in this browser's extension storage.</p>
-    <form id="token-form">
-      <input id="token-input" type="password" placeholder="github_pat_…" autocomplete="off">
-      <button type="submit">Save token</button>
-      <button id="remove-token" type="button" hidden>Remove</button>
-    </form>
-    <p id="token-status" class="muted"></p>
-  </section>
-
-  <section>
-    <h2>Sync</h2>
-    <dl id="sync-info"></dl>
+    <p id="username-note" class="muted"></p>
+    <dl id="leetcode-info"></dl>
     <div class="button-row">
-      <button id="sync-now" type="button">Sync now</button>
-      <button id="import-existing" type="button">Import existing problems</button>
+      <button id="sync-now" type="button">Check now</button>
+      <button id="import-recent" type="button">Import recent</button>
     </div>
-    <p class="muted">The first sync only records the latest commit, so older submissions are skipped.
-      Use <strong>Import existing problems</strong> to add every problem already in the repo to the popup for rating.</p>
-    <p id="action-status" class="muted"></p>
+    <p class="muted">The first check only notes what's already there, so past solves aren't queued.
+      <strong>Import recent</strong> adds your most recent accepted problems (about 20) that aren't tracked yet
+      to the popup for rating.</p>
+    <p id="leetcode-status" class="muted" role="status"></p>
+  </section>
+
+  <section id="calendars-section">
+    <h2>Calendars</h2>
+    <p class="muted">Each connected account gets its own calendar named “ReLeet” with a block for every upcoming
+      review, and a reminder before it. Re-rating a problem moves its block; deleting the problem deletes it.</p>
+    <div id="calendar-cards"></div>
+    <div class="button-row">
+      <button id="calendar-sync-now" type="button" hidden>Update calendars now</button>
+    </div>
+    <p id="calendar-sync-status" class="muted" role="status"></p>
+  </section>
+
+  <section id="schedule-section">
+    <h2>Schedule</h2>
+    <form id="schedule-form">
+      <div class="field-row">
+        <label for="start-time">First block of the day starts at</label>
+        <input id="start-time" type="time" required>
+      </div>
+      <fieldset class="field-row">
+        <legend>Block length by last rating</legend>
+        <label class="duration easy">Easy <input id="duration-easy" type="number" min="5" max="240" step="1" required> <span class="unit">min</span></label>
+        <label class="duration medium">Medium <input id="duration-medium" type="number" min="5" max="240" step="1" required> <span class="unit">min</span></label>
+        <label class="duration hard">Hard <input id="duration-hard" type="number" min="5" max="240" step="1" required> <span class="unit">min</span></label>
+      </fieldset>
+      <p class="field-row">Reminder: <span id="reminder-text"></span></p>
+      <button type="submit">Save</button>
+    </form>
+    <p class="muted">Reviews on the same day are placed back to back from the start time, every day including
+      weekends. Changing these moves upcoming blocks in connected calendars; blocks that already started stay
+      where they are.</p>
+    <p id="schedule-status" class="muted" role="status"></p>
   </section>
 
   <script type="module" src="options.js"></script>

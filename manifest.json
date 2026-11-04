@@ -1,18 +1,29 @@
 {
   "manifest_version": 3,
   "name": "ReLeet",
-  "version": "0.2.0",
-  "description": "Spaced repetition reminders for LeetCode / NeetCode problems.",
-  "permissions": ["storage", "alarms", "notifications"],
-  "host_permissions": ["https://api.github.com/*"],
+  "version": "0.3.0",
+  "description": "Spaced repetition for LeetCode: detects accepted solves, asks how hard they felt, and books review blocks in your calendar.",
+  "permissions": ["storage", "alarms", "notifications", "identity"],
+  "host_permissions": [
+    "https://leetcode.com/*",
+    "https://www.googleapis.com/*",
+    "https://oauth2.googleapis.com/*",
+    "https://login.microsoftonline.com/*",
+    "https://graph.microsoft.com/*",
+    "https://*.icloud.com/*"
+  ],
+  "oauth2": {
+    "client_id": "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": ["https://www.googleapis.com/auth/calendar.app.created"]
+  },
   "options_ui": {
     "page": "options/options.html",
     "open_in_tab": true
   },
   "content_scripts": [
     {
-      "matches": ["https://neetcode.io/problems/*"],
-      "js": ["content/neetcode.js"],
+      "matches": ["https://leetcode.com/*"],
+      "js": ["content/leetcode.js"],
       "run_at": "document_idle"
     }
   ],

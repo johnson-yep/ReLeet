@@ -123,6 +123,22 @@ footer {
   border-top: 1px solid var(--border);
 }
 footer .error { font-size: 12px; margin: 0; }
+.footer-status { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.footer-actions { flex-shrink: 0; white-space: nowrap; }
+
+.banner {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--medium);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--medium) 12%, var(--bg));
+  font-size: 12px;
+}
+.banner .link-btn { flex-shrink: 0; white-space: nowrap; }
 
 .rating-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
 .rating-row button { padding: 6px; font-weight: 600; }

@@ -4,32 +4,46 @@ import {
   saveProblem,
   deleteProblem,
   getPending,
-  getPendingMap,
   dismissPending,
-  resolvePending,
   getSettings,
-  getSyncState,
+  getLeetCodeState,
+  getSchedule,
+  getCalendars,
   onProblemsChanged,
   onPendingChanged,
-  onSyncStateChanged,
+  onSettingsChanged,
+  onLeetCodeStateChanged,
+  onScheduleChanged,
+  onCalendarsChanged,
 } from '../lib/storage.js';
 import { applySolve, recordReview, groupByDue, startOfDay, RATINGS } from '../lib/srs.js';
 import { parseProblemInput } from '../lib/problem.js';
-import { createReviewInvite } from '../lib/calendar.js';
+import { createReviewInvite, slotForProblem } from '../lib/calendar.js';
+import { ratePending } from '../lib/rating.js';
 
 const $ = (id) => document.getElementById(id);
 const template = $('problem-template');
 const DAY_MS = 24 * 60 * 60 * 1000;
+const CALENDAR_NAMES = { google: 'Google', outlook: 'Outlook', apple: 'Apple' };
+const CALENDAR_FULL_NAMES = { google: 'Google Calendar', outlook: 'Outlook', apple: 'iCloud Calendar' };
 
 let problems = [];
 let pending = [];
+let settings = null;
+let leetcode = {};
+let schedule = { layoutKey: null, entries: {} };
+let calendars = {};
 
 function label(rating) {
   return rating[0].toUpperCase() + rating.slice(1);
 }
 
+function daysFromToday(ms) {
+  return Math.round((startOfDay(ms) - startOfDay(Date.now())) / DAY_MS);
+}
+
 function relativeDay(dueAt) {
-  const days = Math.round((startOfDay(dueAt) - startOfDay(Date.now())) / DAY_MS);
+  const days = daysFromToday(dueAt);
   if (days < -1) return `${-days} days overdue`;
   if (days === -1) return 'overdue since yesterday';
   if (days === 0) return 'today';
@@ -39,6 +53,10 @@ function relativeDay(dueAt) {
 
 function formatDate(ms) {
   return new Date(ms).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function formatTime(ms) {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
 function timeAgo(ms) {
@@ -75,6 +93,15 @@ function ratingButtons(onRate, verb) {
   );
 }
 
+const connectedCalendars = () => Object.keys(CALENDAR_NAMES).filter((name) => calendars[name]?.connected);
+
+// The planned block, if it's still ahead (or today). An overdue review's block
+// is history, so its time isn't shown.
+function plannedBlock(problem) {
+  const slot = schedule.entries?.[problem.id];
+  return slot && daysFromToday(slot.start) >= 0 ? slot : null;
+}
+
 function renderPendingItem(s) {
   const tracked = problems.some((p) => p.id === s.id);
   const meta = [
@@ -90,31 +117,38 @@ function renderPendingItem(s) {
 
 function renderProblem(problem, isDueToday) {
   const reviews = (problem.history?.length ?? 1) - 1;
+  const block = plannedBlock(problem);
   const meta =
     `${label(problem.rating)} · solved ${formatDate(problem.solvedAt)} · due ${relativeDay(problem.dueAt)}` +
+    (block ? ` · ${formatTime(block.start)}` : '') +
     (reviews ? ` · ${reviews} review${reviews > 1 ? 's' : ''}` : '');
 
   // Rating a due problem counts as completing the review and reschedules it.
   const actions = isDueToday
     ? ratingButtons((rating) => review(problem.id, rating), 'Reviewed')
     : [button('⏰', 'icon-btn', () => makeDueNow(problem.id), 'Make due now (for testing notifications)')];
-  actions.push(
-    button(
-      '📅',
-      'icon-btn',
-      () => downloadCalendarInvite(problem),
-      `Add review on ${formatDate(problem.dueAt)} to a calendar`,
-    ),
-  );
+  // A connected calendar already gets the block; the download is for everyone else.
+  if (!connectedCalendars().length) {
+    actions.push(
+      button(
+        '📅',
+        'icon-btn',
+        () => downloadCalendarInvite(problem),
+        `Add review on ${formatDate(problem.dueAt)} to a calendar`,
+      ),
+    );
+  }
   actions.push(button('✕', 'icon-btn', () => remove(problem), 'Delete'));
 
   const li = problemItem(problem, meta, actions);
-  li.title = `Review date: ${formatDate(problem.dueAt)}`;
+  li.title = `Review date: ${formatDate(problem.dueAt)}` + (block ? ` at ${formatTime(block.start)}` : '');
   return li;
 }
 
 function downloadCalendarInvite(problem) {
-  const { contents, filename } = createReviewInvite(problem);
+  const slot = schedule.entries?.[problem.id] ?? slotForProblem(problem, settings);
+  if (!slot) return;
+  const { contents, filename } = createReviewInvite(slot);
   const url = URL.createObjectURL(new Blob([contents], { type: 'text/calendar;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
@@ -141,27 +175,51 @@ function render() {
   $('summary').textContent = `${dueToday.length} due · ${problems.length} tracked`;
 }
 
-async function renderSyncStatus() {
-  const [settings, state] = await Promise.all([getSettings(), getSyncState()]);
+function setStatus(el, text, className = 'muted') {
+  el.textContent = text;
+  el.className = className;
+}
+
+function renderLeetCodeStatus() {
+  const username = String(settings?.leetcodeUsername ?? '').trim();
   const status = $('sync-status');
-  $('sync-now').hidden = !settings.owner;
-  if (!settings.owner) {
-    status.textContent = 'GitHub not connected';
-    status.className = 'muted';
-  } else if (state.lastError) {
-    status.textContent = `Sync error: ${state.lastError}`;
-    status.className = 'error';
+  $('sync-now').hidden = !username;
+  if (!username) {
+    setStatus(status, 'LeetCode not connected');
+  } else if (leetcode.lastError) {
+    setStatus(status, `LeetCode: ${leetcode.lastError}`, 'error');
   } else {
-    status.textContent = `${settings.repo} · synced ${state.lastSyncAt ? timeAgo(state.lastSyncAt) : 'never'}`;
-    status.className = 'muted';
+    const checked = leetcode.username === username && leetcode.lastSyncAt ? timeAgo(leetcode.lastSyncAt) : 'never';
+    setStatus(status, `@${username} · checked ${checked}`);
   }
 }
 
-async function ratePending(id, rating) {
-  const s = (await getPendingMap())[id];
-  if (!s) return;
-  const solve = { ...s, at: s.submittedAt ?? Date.now(), source: 'github' };
-  await resolvePending(id, applySolve(await getProblem(id), solve, rating));
+function openSettings() {
+  chrome.runtime.openOptionsPage();
+}
+
+const sentence = (text) => (/[.!?]$/.test(text) ? text : `${text}.`);
+
+function calendarWarning(name, state) {
+  const p = document.createElement('p');
+  p.className = 'banner';
+  const text = document.createElement('span');
+  const calendar = CALENDAR_FULL_NAMES[name];
+  // A sign-in problem needs the user; anything else (offline, server trouble) retries on its own.
+  text.textContent = state.needsReconnect
+    ? `${calendar} needs you to sign in again.`
+    : `Couldn't update ${calendar}: ${sentence(String(state.lastError))} Retrying every 15 minutes.`;
+  p.append(text, button(state.needsReconnect ? 'Reconnect' : 'Settings', 'link-btn', openSettings));
+  return p;
+}
+
+function renderCalendarStatus() {
+  const names = connectedCalendars();
+  const status = $('calendar-status');
+  status.hidden = names.length === 0;
+  status.textContent = `Calendar: ${names.map((name) => CALENDAR_NAMES[name]).join(', ')}`;
+  const failing = names.filter((name) => calendars[name].needsReconnect || calendars[name].lastError);
+  $('calendar-warnings').replaceChildren(...failing.map((name) => calendarWarning(name, calendars[name])));
 }
 
 async function review(id, rating) {
@@ -204,19 +262,35 @@ $('dismiss-all').addEventListener('click', () => {
 $('sync-now').addEventListener('click', async () => {
   const btn = $('sync-now');
   btn.disabled = true;
-  btn.textContent = 'Syncing…';
-  await chrome.runtime.sendMessage({ type: 'sync-now' });
-  btn.disabled = false;
-  btn.textContent = 'Sync now';
+  btn.textContent = 'Checking…';
+  try {
+    await chrome.runtime.sendMessage({ type: 'sync-now' }); // the result arrives via storage listeners
+  } catch {
+    // The worker failed to answer; the status line still shows the last check.
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Check now';
+  }
 });
 
-$('open-settings').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('open-settings').addEventListener('click', openSettings);
 
 onProblemsChanged((list) => { problems = list; render(); });
 onPendingChanged((list) => { pending = list; render(); });
-onSyncStateChanged(renderSyncStatus);
+onScheduleChanged((next) => { schedule = next; render(); });
+onSettingsChanged((next) => { settings = next; renderLeetCodeStatus(); });
+onLeetCodeStateChanged((next) => { leetcode = next; renderLeetCodeStatus(); });
+onCalendarsChanged((next) => { calendars = next; renderCalendarStatus(); render(); });
 
-[problems, pending] = await Promise.all([getProblems(), getPending()]);
+[problems, pending, settings, leetcode, schedule, calendars] = await Promise.all([
+  getProblems(),
+  getPending(),
+  getSettings(),
+  getLeetCodeState(),
+  getSchedule(),
+  getCalendars(),
+]);
 render();
-renderSyncStatus();
-chrome.runtime.sendMessage({ type: 'sync-if-stale' }); // results arrive via storage listeners
+renderLeetCodeStatus();
+renderCalendarStatus();
+chrome.runtime.sendMessage({ type: 'sync-if-stale' }).catch(() => {}); // results arrive via storage listeners
