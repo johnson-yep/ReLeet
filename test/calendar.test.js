@@ -373,6 +373,14 @@ test('slotForProblem places an overdue review at the start time on its due day',
   assert.equal(s.end, at(2026, 11, 1, 9, 40));
 });
 
+test('slotForProblem uses the stored review day, not dueAt in the current zone', () => {
+  // Rated in a zone further east: dueAt is the evening before, locally.
+  const p = problem({ dueAt: at(2026, 11, 4, 23), dueDay: '2026-11-05' });
+  assert.equal(slotForProblem(p, SETTINGS, at(2026, 11, 4, 8)).start, at(2026, 11, 5, 9, 0));
+  const overdue = problem({ dueAt: at(2026, 10, 31, 23), dueDay: '2026-11-01' });
+  assert.equal(slotForProblem(overdue, SETTINGS, at(2026, 11, 4, 8)).start, at(2026, 11, 1, 9, 0));
+});
+
 test('slotForProblem today: never before now, rounded up to 5 minutes', () => {
   const today = problem({ dueAt: at(2026, 11, 4) });
   assert.equal(slotForProblem(today, SETTINGS, at(2026, 11, 4, 8)).start, at(2026, 11, 4, 9, 0));

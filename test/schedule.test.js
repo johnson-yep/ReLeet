@@ -446,6 +446,89 @@ test('an overdue problem keeps its started block, even after layout changes', ()
   assert.deepEqual(plan.entries.overdue, slot(reRated, time(-1, 9), 40));
 });
 
+test('a block that ran past midnight and has not started is re-placed after a layout change, not dropped', () => {
+  const ratedAt = time(-4, 9);
+  const p = problem('p', { due: day(-1), rating: 'hard', ratedAt });
+  const q = problem('q', { due: day(-1), rating: 'hard', ratedAt: ratedAt + 1 });
+  const r = problem('r', { due: day(-1), rating: 'hard', ratedAt: ratedAt + 2 });
+  const prev = schedule([slot(p, time(-1, 23), 60), slot(q, time(0, 0), 60), slot(r, time(0, 1), 60)]);
+  const settings = withSettings({ durations: { hard: 50 } });
+
+  const plan = planSchedule(prev, [p, q, r], settings, time(0, 0, 30));
+  assert.deepEqual(placements(plan), {
+    p: `${dayKey(day(-1))} 23:00+60`, // started: frozen
+    q: `${dayKey(day(0))} 00:00+60`, // started: frozen
+    r: `${dayKey(day(0))} 01:00+50`, // not started: re-placed (after q), new length
+  });
+  assert.equal(plan.entries.r.day, dayKey(day(-1)));
+  // So the calendar moves the event instead of deleting it.
+  const old = prev.entries.r;
+  const ref = { id: 'ev-r', day: old.day, start: old.start, end: old.end, hash: slotHash(old) };
+  assert.deepEqual(diffEvents(plan.entries, { r: ref }, time(0, 0, 30)).update, [{ slot: plan.entries.r, ref }]);
+  // Once it has started (or without a layout change) nothing moves.
+  assert.deepEqual(planSchedule(prev, [p, q, r], SETTINGS, time(0, 0, 30)), prev);
+});
+
+test("a started block that no connected calendar holds is placed again from now", () => {
+  // Planned this morning while no calendar was connected; one is connected at 15:00.
+  const p = problem('hard-one', { due: day(0), rating: 'hard' });
+  const q = problem('later-one', { due: day(0), rating: 'easy', ratedAt: p.history[0].at + 1 });
+  const morning = planSchedule(null, [p, q], SETTINGS, time(0, 7));
+  assert.equal(morning.entries['hard-one'].start, time(0, 9));
+
+  const plan = planSchedule(morning, [p, q], SETTINGS, time(0, 15, 2), { booked: new Set() });
+  assert.deepEqual(placements(plan), {
+    'hard-one': `${dayKey(day(0))} 15:05+60`,
+    'later-one': `${dayKey(day(0))} 16:05+20`,
+  });
+  // diffEvents then books it; without the re-placement nothing would be created.
+  assert.deepEqual(diffEvents(plan.entries, {}, time(0, 15, 2)).create.map((s) => s.problemId), ['hard-one', 'later-one']);
+});
+
+test('a started block stays frozen when a calendar holds it, or when none is connected', () => {
+  const p = problem('a', { due: day(0), rating: 'medium' });
+  const prev = schedule([slot(p, time(0, 9), 40)]);
+  // Google has it; Outlook, connected later, must not move it.
+  assert.deepEqual(planSchedule(prev, [p], SETTINGS, time(0, 15), { booked: new Set(['a']) }), prev);
+  // No calendar at all: the advisory time doesn't creep forward on every sync.
+  for (const now of [time(0, 9, 30), time(0, 15), time(0, 22)]) {
+    assert.deepEqual(planSchedule(prev, [p], SETTINGS, now), prev);
+    assert.deepEqual(planSchedule(prev, [p], SETTINGS, now, { booked: null }), prev);
+  }
+  // A missed review from yesterday stays in the past either way.
+  const overdue = problem('old', { due: day(-1) });
+  const old = schedule([slot(overdue, time(-1, 9), 40)]);
+  assert.deepEqual(planSchedule(old, [overdue], SETTINGS, time(0, 8), { booked: new Set() }), old);
+});
+
+test('a review keeps its day (and its block) when the time zone changes', () => {
+  const rated = Date.UTC(2026, 10, 9, 18); // Mon 9 Nov, 12:00 in Chicago
+  const p = withTimeZone('America/Chicago', () =>
+    createProblem({ id: 'two-sum', title: 'Two Sum', url: 'https://leetcode.com/problems/two-sum/', rating: 'medium', solvedAt: rated }),
+  );
+  assert.equal(p.dueDay, '2026-11-12');
+  const plan = withTimeZone('America/Chicago', () => planSchedule(null, [p], SETTINGS, rated + HOUR));
+  const block = plan.entries['two-sum'];
+  assert.equal(block.day, '2026-11-12');
+  assert.equal(block.start, Date.UTC(2026, 10, 12, 15)); // Thu 09:00 CST
+  const ref = { id: 'ev', day: block.day, start: block.start, end: block.end, hash: slotHash(block) };
+
+  const checks = [
+    ['America/Denver', Date.UTC(2026, 10, 9, 20)], // same day, an hour further west
+    ['America/Denver', Date.UTC(2026, 10, 12, 13)], // review day, 06:00 MST, block not started yet
+    ['America/Los_Angeles', Date.UTC(2026, 10, 12, 15, 30)], // block in progress
+    ['America/Chicago', Date.UTC(2026, 10, 12, 16)], // back home
+    ['Asia/Tokyo', Date.UTC(2026, 10, 12, 13)], // far east
+  ];
+  for (const [tz, now] of checks) {
+    withTimeZone(tz, () => {
+      const next = planSchedule(plan, [p], SETTINGS, now, { booked: new Set(['two-sum']) });
+      assert.deepEqual(next, plan, `${tz} @ ${new Date(now).toISOString()}`);
+      assert.deepEqual(diffEvents(next.entries, { 'two-sum': ref }, now), { create: [], update: [], remove: [], forget: [] });
+    });
+  }
+});
+
 test('removed problems lose their blocks and their time is free again', () => {
   const gonePast = problem('gone-past', { due: day(0) });
   const goneFuture = problem('gone-future', { due: day(1) });
@@ -692,6 +775,18 @@ test('diffEvents never touches a started event on the same day', () => {
   const before = makeSlot('a', -10);
   const changed = { ...before, title: 'Review: Changed', reminderMinutes: 5, end: before.end + HOUR };
   assert.deepEqual(diffEvents({ a: changed }, { a: refFor(before) }, NOW()), EMPTY);
+});
+
+test('diffEvents moves a started event that missed a move on the same day', () => {
+  // This calendar was failing while the block moved from 09:00 to a later time.
+  const stale = refFor(makeSlot('a', -180));
+  for (const moved of [makeSlot('a', 60), makeSlot('a', -10)]) {
+    assert.equal(moved.day, stale.day);
+    assert.deepEqual(diffEvents({ a: moved }, { a: stale }, NOW()), { ...EMPTY, update: [{ slot: moved, ref: stale }] });
+  }
+  // Once the planned block is over too, the old event is just history.
+  const over = makeSlot('a', -100, 40);
+  assert.deepEqual(diffEvents({ a: over }, { a: stale }, NOW()), EMPTY);
 });
 
 test('diffEvents forgets a started event whose review moved to another day, and creates the next one', () => {

@@ -211,6 +211,46 @@ test('createEvent on a deleted calendar → calendarMissing', async () => {
   await assert.rejects(p.createEvent(CAL, slot), isCalendarError({ calendarMissing: true }));
 });
 
+test('listEvents returns ReLeet events that have not ended, page by page', async () => {
+  const FROM = Date.UTC(2026, 10, 4, 12);
+  const base = `${GOOGLE_API}${CAL_PATH}/events?timeMin=2026-11-04T12%3A00%3A00.000Z&maxResults=250`;
+  const mine = (id) => ({ id, status: 'confirmed', extendedProperties: { private: { releetProblemId: 'two-sum' } } });
+  const { p, fetch } = provider([
+    {
+      method: 'GET',
+      url: base,
+      respond: json({ items: [mine('e1'), { id: 'theirs', status: 'confirmed' }], nextPageToken: 'pg2' }),
+    },
+    {
+      method: 'GET',
+      url: `${base}&pageToken=pg2`,
+      respond: json({ items: [mine('e2'), { ...mine('gone'), status: 'cancelled' }] }),
+    },
+  ]);
+  assert.deepEqual(await p.listEvents(CAL, FROM), [{ id: 'e1' }, { id: 'e2' }]);
+  fetch.assertDone();
+});
+
+test('listEvents: nothing to ask about a calendar it just made; a deleted one is calendarMissing', async () => {
+  const { p, fetch } = provider([
+    {
+      method: 'POST',
+      url: `${GOOGLE_API}/calendars`,
+      json: { summary: 'ReLeet', description: 'Review blocks scheduled by ReLeet.', timeZone: 'Europe/Berlin' },
+      respond: json({ id: 'NEW' }),
+    },
+    {
+      method: 'GET',
+      url: `${GOOGLE_API}${CAL_PATH}/events?timeMin=1970-01-01T00%3A00%3A00.000Z&maxResults=250`,
+      respond: googleError(404, 'notFound'),
+    },
+  ]);
+  assert.equal(await p.ensureCalendar(null), 'NEW');
+  assert.deepEqual(await p.listEvents('NEW', 0), []);
+  await assert.rejects(p.listEvents(CAL, 0), isCalendarError({ calendarMissing: true }));
+  fetch.assertDone();
+});
+
 test('updateEvent patches the event', async () => {
   const later = { ...slot, start: slot.start + 3600e3, end: slot.end + 3600e3 };
   const { p, fetch } = provider([

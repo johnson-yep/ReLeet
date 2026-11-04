@@ -16,7 +16,16 @@ import {
   onScheduleChanged,
   onCalendarsChanged,
 } from '../lib/storage.js';
-import { applySolve, recordReview, groupByDue, startOfDay, RATINGS } from '../lib/srs.js';
+import {
+  applySolve,
+  recordReview,
+  groupByDue,
+  startOfDay,
+  dayKey,
+  dayStartMs,
+  reviewDay,
+  RATINGS,
+} from '../lib/srs.js';
 import { parseProblemInput } from '../lib/problem.js';
 import { createReviewInvite, slotForProblem } from '../lib/calendar.js';
 import { ratePending } from '../lib/rating.js';
@@ -42,8 +51,11 @@ function daysFromToday(ms) {
   return Math.round((startOfDay(ms) - startOfDay(Date.now())) / DAY_MS);
 }
 
-function relativeDay(dueAt) {
-  const days = daysFromToday(dueAt);
+// Local midnight of the problem's review day, for dates shown in the list.
+const reviewDate = (problem) => dayStartMs(reviewDay(problem));
+
+function relativeDay(problem) {
+  const days = daysFromToday(reviewDate(problem));
   if (days < -1) return `${-days} days overdue`;
   if (days === -1) return 'overdue since yesterday';
   if (days === 0) return 'today';
@@ -119,7 +131,7 @@ function renderProblem(problem, isDueToday) {
   const reviews = (problem.history?.length ?? 1) - 1;
   const block = plannedBlock(problem);
   const meta =
-    `${label(problem.rating)} · solved ${formatDate(problem.solvedAt)} · due ${relativeDay(problem.dueAt)}` +
+    `${label(problem.rating)} · solved ${formatDate(problem.solvedAt)} · due ${relativeDay(problem)}` +
     (block ? ` · ${formatTime(block.start)}` : '') +
     (reviews ? ` · ${reviews} review${reviews > 1 ? 's' : ''}` : '');
 
@@ -134,14 +146,14 @@ function renderProblem(problem, isDueToday) {
         '📅',
         'icon-btn',
         () => downloadCalendarInvite(problem),
-        `Add review on ${formatDate(problem.dueAt)} to a calendar`,
+        `Add review on ${formatDate(reviewDate(problem))} to a calendar`,
       ),
     );
   }
   actions.push(button('✕', 'icon-btn', () => remove(problem), 'Delete'));
 
   const li = problemItem(problem, meta, actions);
-  li.title = `Review date: ${formatDate(problem.dueAt)}` + (block ? ` at ${formatTime(block.start)}` : '');
+  li.title = `Review date: ${formatDate(reviewDate(problem))}` + (block ? ` at ${formatTime(block.start)}` : '');
   return li;
 }
 
@@ -229,7 +241,8 @@ async function review(id, rating) {
 
 async function makeDueNow(id) {
   const problem = await getProblem(id);
-  if (problem) await saveProblem({ ...problem, dueAt: Date.now() });
+  const now = Date.now();
+  if (problem) await saveProblem({ ...problem, dueAt: now, dueDay: dayKey(now) });
 }
 
 async function remove(problem) {

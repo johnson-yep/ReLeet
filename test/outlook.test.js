@@ -685,6 +685,60 @@ test('createEvent on a deleted calendar → calendarMissing', async () => {
   await assert.rejects(p.createEvent(CAL, slot), isCalendarError({ calendarMissing: true }));
 });
 
+test('listEvents finds ReLeet events by their description, page by page, leaving others alone', async () => {
+  const FROM = Date.UTC(2026, 10, 4, 12);
+  const first =
+    `${GRAPH_API}/me/calendars/${encodeURIComponent(CAL)}/calendarView` +
+    '?startDateTime=2026-11-04T12%3A00%3A00.000Z&endDateTime=2027-12-09T12%3A00%3A00.000Z&$select=id,body&$top=100';
+  const next = `${GRAPH_API}/me/calendars/${encodeURIComponent(CAL)}/calendarView?$skip=100`;
+  const { p, fetch } = provider([
+    {
+      method: 'GET',
+      url: first,
+      respond: json({
+        value: [
+          { id: 'E1', body: { contentType: 'text', content: slot.description } },
+          { id: 'MINE?', body: { contentType: 'text', content: 'Lunch with Sam' } },
+        ],
+        '@odata.nextLink': next,
+      }),
+    },
+    {
+      method: 'GET',
+      url: next,
+      respond: json({
+        value: [
+          // Graph may answer in HTML even when asked for text.
+          {
+            id: 'E2',
+            body: { contentType: 'html', content: '<html><body><div>Review X<br><br>Scheduled&nbsp;by ReLeet.</div></body></html>' },
+          },
+        ],
+      }),
+    },
+  ]);
+  assert.deepEqual(await p.listEvents(CAL, FROM), [{ id: 'E1' }, { id: 'E2' }]);
+  fetch.assertDone();
+  for (const call of fetch.calls) assert.equal(call.init.headers.Prefer, 'outlook.body-content-type="text"');
+});
+
+test('listEvents: nothing to ask about a calendar it just made; a deleted one is calendarMissing', async () => {
+  const { p, fetch } = provider([
+    { method: 'POST', url: `${GRAPH_API}/me/calendars`, json: { name: 'ReLeet' }, respond: json({ id: 'NEW' }, 201) },
+    {
+      method: 'GET',
+      url:
+        `${GRAPH_API}/me/calendars/${encodeURIComponent(CAL)}/calendarView` +
+        '?startDateTime=1970-01-01T00%3A00%3A00.000Z&endDateTime=1971-02-05T00%3A00%3A00.000Z&$select=id,body&$top=100',
+      respond: graphError(404, 'ErrorItemNotFound'),
+    },
+  ]);
+  assert.equal(await p.ensureCalendar(null), 'NEW');
+  assert.deepEqual(await p.listEvents('NEW', 0), []);
+  await assert.rejects(p.listEvents(CAL, 0), isCalendarError({ calendarMissing: true }));
+  fetch.assertDone();
+});
+
 test('updateEvent patches /me/events/{id}', async () => {
   const { p, fetch } = provider([
     { method: 'PATCH', url: `${GRAPH_API}/me/events/EVT%3D`, json: expectedEventBody, respond: json({ id: 'EVT=' }) },

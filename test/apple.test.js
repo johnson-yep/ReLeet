@@ -324,6 +324,45 @@ test('ensureCalendar finds or creates again when the stored calendar is gone', a
   );
 });
 
+test('listEvents asks for events ending after a time and keeps only ReLeet resources', async () => {
+  const FROM = Date.UTC(2026, 10, 4, 12, 0, 30);
+  const answer = multistatus(`<?xml version="1.0" encoding="UTF-8"?>
+<multistatus xmlns="DAV:">
+  <response><href>/12345678/calendars/A1B2C3D4-0000-4000-8000-000000000001/releet-two-sum-1111.ics</href>
+    <propstat><prop><getetag>"1"</getetag></prop><status>HTTP/1.1 200 OK</status></propstat></response>
+  <response><href>https://caldav.icloud.com:443/12345678/calendars/A1B2C3D4-0000-4000-8000-000000000001/releet-lru-cache-2222.ics</href>
+    <propstat><prop><getetag>"2"</getetag></prop><status>HTTP/1.1 200 OK</status></propstat></response>
+  <response><href>/12345678/calendars/A1B2C3D4-0000-4000-8000-000000000001/DENTIST-3333.ics</href>
+    <propstat><prop><getetag>"3"</getetag></prop><status>HTTP/1.1 200 OK</status></propstat></response>
+  <response><href>/12345678/calendars/A1B2C3D4-0000-4000-8000-000000000001/releet-gone-4444.ics</href>
+    <status>HTTP/1.1 404 Not Found</status></response>
+</multistatus>`);
+  const fetch = fakeFetch({ [`REPORT ${CAL}`]: () => answer({}) });
+  const refs = await provider(fetch).listEvents(CAL, FROM);
+
+  assert.deepEqual(refs, [
+    { id: `${CAL}releet-two-sum-1111.ics`, uid: 'releet-two-sum-1111' },
+    { id: `${CAL}releet-lru-cache-2222.ics`, uid: 'releet-lru-cache-2222' },
+  ]);
+  const [call] = fetch.calls;
+  assert.equal(call.headers.Depth, '1');
+  assert.match(call.body, /<c:calendar-query /);
+  assert.match(call.body, /<c:comp-filter name="VEVENT"><c:time-range start="20261104T120030Z"\/><\/c:comp-filter>/);
+});
+
+test('listEvents: nothing to ask about a calendar it just made; a deleted one is calendarMissing', async () => {
+  const fetch = fakeFetch(
+    { ...DISCOVERY, [`PROPFIND ${HOME}`]: homeListing({ withReleet: false }), [`REPORT ${CAL}`]: () => reply(404) },
+    ({ init }) => reply(init.method === 'MKCALENDAR' ? 201 : 418),
+  );
+  const apple = provider(fetch);
+  const made = await apple.ensureCalendar(null);
+  const before = fetch.calls.length;
+  assert.deepEqual(await apple.listEvents(made, 0), []);
+  assert.equal(fetch.calls.length, before);
+  await rejectsWith(apple.listEvents(CAL, 0), (e) => assert.equal(e.calendarMissing, true));
+});
+
 // --- events -------------------------------------------------------------------
 
 test('createEvent PUTs a CalDAV resource with If-None-Match and UTC times', async () => {

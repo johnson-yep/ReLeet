@@ -70,7 +70,8 @@ Problems tracked before v0.3 (including ones detected from NeetCode) stay as the
 ## Scheduling
 
 Easy → 7 days, Medium → 3 days, Hard → 1 day. Review dates are whole days: a problem becomes due at local
-midnight of its review date. Rating a due problem in the popup (E / M / H) counts as a review and
+midnight of its review date. The date is kept as a date, so travelling to another time zone doesn't move a
+review to the day before or after. Rating a due problem in the popup (E / M / H) counts as a review and
 reschedules it.
 
 Each upcoming review also gets a planned **block**, shown in the popup (e.g. "due tomorrow · 9:00 AM"):
@@ -81,7 +82,8 @@ Each upcoming review also gets a planned **block**, shown in the popup (e.g. "du
 - a reminder pops up 15 minutes before.
 
 Start time and lengths are in Settings → Schedule. Changing them moves upcoming blocks; blocks that already
-started stay put.
+started stay put. If no calendar holds today's block yet when one is connected (or starts working again)
+after its time has passed, today's review is booked from the current time instead.
 
 ## Calendars
 
@@ -90,17 +92,24 @@ Each connected account gets its own calendar named **ReLeet**, created by the ex
 calendar gets the same events: title `Review: <problem>`, the problem link in the description, shown as busy,
 with the reminder.
 
-- Connecting adds events for all upcoming reviews.
+- Connecting adds events for all upcoming reviews. If the account already has a ReLeet calendar from an
+  earlier connection (Outlook and iCloud find it by name), its upcoming ReLeet events are replaced rather
+  than added a second time; past ones stay as history.
 - Re-rating or re-solving a problem moves its event; deleting the problem deletes it.
 - Completing a review leaves the old event as history and adds the next one. A missed review's event stays
   in the past; the popup shows the problem as overdue.
-- Disconnecting deletes the ReLeet calendar from that account (after asking). If that fails, e.g. offline,
-  you can disconnect anyway and delete the calendar yourself.
+- Disconnecting deletes the ReLeet calendar from that account (after asking). If that fails because sign-in
+  expired, Reconnect first and then Disconnect. Otherwise (e.g. offline) you can disconnect anyway and delete
+  the calendar yourself; ReLeet remembers it (without any sign-in), so connecting again later picks it up
+  instead of filling it twice.
 - If an update fails (offline, expired sign-in), it's retried every 15 minutes and on the next change. When
   sign-in is needed, the popup shows a **Reconnect** link.
 
 The service worker is the only thing that writes calendar state. Each event it creates, moves or deletes is
-saved straight away, so a worker stopped mid-sync carries on next time without duplicates.
+saved straight away, so a worker stopped mid-sync carries on next time without duplicates. When a create's
+answer never arrived (a timeout, or the worker stopped), the next sync looks for ReLeet events the calendar
+has but ReLeet doesn't know about and deletes them before creating anything. A calendar that was failing
+while a block moved catches up when it works again, even if the old time has passed.
 
 Without a connected calendar, click 📅 beside a problem to download a standard `.ics` file for its next block
 and import it into any calendar app yourself. Later changes in ReLeet don't update an imported file.

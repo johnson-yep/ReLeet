@@ -42,9 +42,17 @@ async function until(check) {
 
 // One fake account per provider: calendars (id → Map(eventId → slot)) and a
 // call log. `before(op, ...args)` runs before every call; throw or return a
-// promise from it to make that call fail or wait.
+// promise from it to make that call fail or wait. `reuseByName`: like Outlook
+// and iCloud, ensureCalendar without a usable id picks up an existing calendar.
 function fakeAccount(name) {
-  const account = { calendars: new Map(), calls: [], before: null, signedIn: true, makeProvider: null };
+  const account = {
+    calendars: new Map(),
+    calls: [],
+    before: null,
+    signedIn: true,
+    makeProvider: null,
+    reuseByName: false,
+  };
   let nextId = 1;
   const call = async (op, ...args) => {
     account.calls.push([op, ...args]);
@@ -60,6 +68,7 @@ function fakeAccount(name) {
     async ensureCalendar(id) {
       await call('ensureCalendar', id);
       if (id && account.calendars.has(id)) return id;
+      if (account.reuseByName && account.calendars.size) return [...account.calendars.keys()][0];
       const created = `${name}-cal-${nextId++}`;
       account.calendars.set(created, new Map());
       return created;
@@ -81,6 +90,11 @@ function fakeAccount(name) {
       await call('deleteEvent', calendarId, ref);
       account.calendars.get(calendarId)?.delete(ref.id);
     },
+    // Events that haven't ended by `from`.
+    async listEvents(calendarId, from) {
+      await call('listEvents', calendarId, from);
+      return [...calendar(calendarId)].filter(([, slot]) => slot.end > from).map(([id]) => ({ id }));
+    },
     async deleteCalendar(calendarId) {
       await call('deleteCalendar', calendarId);
       account.calendars.delete(calendarId);
@@ -98,7 +112,7 @@ function fakeAccount(name) {
 let accounts;
 let counts;
 
-function makeSync({ isConfigured = () => true } = {}) {
+function makeSync({ isConfigured = () => true, updateCalendarState = storage.updateCalendarState } = {}) {
   return createCalendarSync({
     storage: {
       getProblems: storage.getProblems,
@@ -109,7 +123,7 @@ function makeSync({ isConfigured = () => true } = {}) {
         return storage.saveSchedule(s);
       },
       getCalendars: storage.getCalendars,
-      updateCalendarState: storage.updateCalendarState,
+      updateCalendarState,
     },
     async makeProvider(name, state, options) {
       counts.makeProvider.push({ name, interactive: options.interactive, state: structuredClone(state) });
@@ -277,6 +291,111 @@ test('reconnecting keeps the calendar and its events, so nothing is duplicated',
   assert.equal(accounts.google.calendars.size, 1);
 });
 
+for (const name of ['outlook', 'apple', 'google']) {
+  test(`reconnecting ${name} after "Disconnect anyway" picks up the calendar it left, without doubling events`, async () => {
+    const sync = makeSync();
+    // Outlook and iCloud find an existing "ReLeet" calendar by name; Google can't.
+    accounts[name].reuseByName = name !== 'google';
+    const credentials = name === 'apple' ? { appleId: 'me@icloud.com', appPassword: 'x' } : undefined;
+    await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2), problem('c', 'hard', 3));
+    await sync.connectCalendar(name, credentials);
+    const before = stored(name);
+
+    // Sign-in expired, so the calendar can't be deleted: the user forces it.
+    accounts[name].signedIn = false;
+    assert.equal((await sync.disconnectCalendar(name)).status, 'error');
+    assert.equal((await sync.disconnectCalendar(name, { force: true })).status, 'disconnected');
+    assert.equal(stored(name).connected, false);
+    assert.deepEqual(stored(name).auth, name === 'apple' ? { appleId: 'me@icloud.com' } : undefined);
+
+    accounts[name].signedIn = true;
+    accounts[name].calls = [];
+    assert.equal((await sync.connectCalendar(name, credentials)).status, 'connected');
+    assert.equal(stored(name).calendarId, before.calendarId);
+    assert.deepEqual(stored(name).events, before.events);
+    assert.equal(accounts[name].calendars.size, 1);
+    assert.equal(accounts[name].events().size, 3);
+    assert.equal(accounts[name].ops('createEvent').length, 0);
+  });
+}
+
+test('a "ReLeet" calendar found again without a stored map gets its upcoming events replaced, not doubled', async () => {
+  const sync = makeSync();
+  accounts.outlook.reuseByName = true;
+  const problems = [problem('a', 'easy', 0), problem('b', 'medium', 1), problem('c', 'hard', 2)];
+  await setProblems(...problems);
+  await sync.connectCalendar('outlook');
+  const calendarId = stored('outlook').calendarId;
+  // A finished review from last week is history.
+  accounts.outlook.calendars.get(calendarId).set('history', { problemId: 'a', start: at(-7, 9), end: at(-7, 9, 20) });
+
+  // Reinstalled at 09:10, while a's 09:00 block runs: storage is gone, the calendar isn't.
+  clock = at(0, 9, 10);
+  chrome.reset();
+  await setProblems(...problems);
+  accounts.outlook.calls = [];
+  assert.equal((await sync.connectCalendar('outlook')).status, 'connected');
+
+  assert.equal(stored('outlook').calendarId, calendarId);
+  assert.equal(accounts.outlook.calendars.size, 1);
+  assert.equal(accounts.outlook.ops('deleteEvent').length, 3); // a (running), b, c
+  assert.equal(accounts.outlook.events().size, 4); // history + one block per problem
+  assert.ok(accounts.outlook.events().has('history'));
+  assertInSync('outlook');
+});
+
+test('a calendar left behind that can no longer be opened does not block connecting again', async () => {
+  const sync = makeSync();
+  await setProblems(problem('a', 'easy', 1));
+  await sync.connectCalendar('google');
+  const old = stored('google').calendarId;
+  accounts.google.before = (op) => {
+    if (op === 'deleteCalendar') throw new CalendarError("Couldn't reach Google Calendar.");
+  };
+  await sync.disconnectCalendar('google', { force: true });
+
+  // Offline: just an error, the leftover is kept for the next try.
+  accounts.google.before = (op) => {
+    if (op === 'ensureCalendar') throw new CalendarError("Couldn't reach Google Calendar.");
+  };
+  assert.equal((await sync.connectCalendar('google')).status, 'error');
+  assert.equal(stored('google').calendarId, old);
+
+  // Access to it went with the old sign-in: start with a new calendar.
+  accounts.google.before = (op, id) => {
+    if (op === 'ensureCalendar' && id === old) throw new CalendarError('Google Calendar request failed.', { status: 403 });
+  };
+  assert.equal((await sync.connectCalendar('google')).status, 'connected');
+  assert.notEqual(stored('google').calendarId, old);
+  assert.deepEqual(Object.keys(stored('google').events), ['a']);
+  assertInSync('google');
+});
+
+test("connecting later on a review day still books today's review", async () => {
+  const sync = makeSync();
+  await setProblems(problem('lru-cache', 'hard', 0));
+  clock = at(0, 7);
+  await sync.syncCalendars(); // planned for 09:00 while no calendar is connected
+  assert.equal(chrome.dump().schedule.entries['lru-cache'].start, at(0, 9));
+
+  clock = at(0, 15, 2);
+  await sync.connectCalendar('google');
+  assert.equal(stored('google').events['lru-cache'].start, at(0, 15, 5));
+  assertInSync('google');
+});
+
+test('a calendar connected later leaves a block another calendar holds where it is', async () => {
+  const sync = makeSync();
+  await setProblems(problem('lru-cache', 'hard', 0));
+  await sync.connectCalendar('google'); // 09:00
+  clock = at(0, 15);
+  accounts.google.calls = [];
+  await sync.connectCalendar('outlook');
+  assert.equal(chrome.dump().schedule.entries['lru-cache'].start, at(0, 9));
+  assert.equal(accounts.google.ops('updateEvent').length, 0);
+  assert.equal(accounts.outlook.ops('createEvent').length, 0); // already over
+});
+
 test('an unconfigured provider explains what is missing and never signs in', async () => {
   const sync = makeSync({ isConfigured: (name) => name === 'apple' });
   const res = await sync.connectCalendar('google');
@@ -383,9 +502,10 @@ test('a calendar deleted mid-sync is recreated once with every event', async () 
   const res = await sync.syncCalendars();
 
   assert.deepEqual(res.results.google, { created: 3, updated: 0, removed: 0, forgotten: 0, error: null });
+  // The retry asks about the same calendar first, and only then replaces it.
   assert.deepEqual(accounts.google.ops('ensureCalendar'), [
     ['ensureCalendar', oldCalendar],
-    ['ensureCalendar', null],
+    ['ensureCalendar', oldCalendar],
   ]);
   const state = stored('google');
   assert.notEqual(state.calendarId, oldCalendar);
@@ -410,6 +530,86 @@ test('a calendar that keeps going missing is retried only once, then reported', 
   assert.equal(accounts.google.ops('ensureCalendar').length, 2);
   assert.equal(stored('google').lastError, 'The ReLeet calendar is gone.');
   assert.equal(stored('google').needsReconnect, false);
+});
+
+test('a stray "calendar gone" answer for a calendar that still exists keeps its events', async () => {
+  const sync = makeSync();
+  accounts.outlook.reuseByName = true;
+  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2));
+  await sync.connectCalendar('outlook');
+  const calendarId = stored('outlook').calendarId;
+
+  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2), problem('c', 'hard', 3));
+  let once = true;
+  accounts.outlook.before = (op) => {
+    if (op === 'createEvent' && once) {
+      once = false;
+      throw new CalendarError('The ReLeet calendar is gone from Outlook.', { calendarMissing: true });
+    }
+  };
+  const res = await sync.syncCalendars();
+
+  assert.deepEqual(res.results.outlook, { created: 1, updated: 0, removed: 0, forgotten: 0, error: null });
+  assert.equal(stored('outlook').calendarId, calendarId);
+  assert.equal(accounts.outlook.calendars.size, 1);
+  assert.equal(accounts.outlook.events().size, 3);
+  assertInSync('outlook');
+});
+
+test('an event whose create answer was lost is deleted before the next sync creates it again', async () => {
+  const sync = makeSync();
+  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2));
+  await sync.connectCalendar('google');
+  const real = accounts.google.provider;
+  accounts.google.makeProvider = async () => ({
+    ...real,
+    async createEvent(calendarId, slot) {
+      await real.createEvent(calendarId, slot); // the server has it…
+      throw new CalendarError("Google Calendar didn't respond in time."); // …but the answer never came
+    },
+  });
+  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2), problem('c', 'hard', 3));
+  assert.equal((await sync.syncCalendars()).results.google.error, "Google Calendar didn't respond in time.");
+  assert.equal(stored('google').checkStrays, true);
+  assert.equal(accounts.google.events().size, 3);
+
+  // Also after a worker restart: the flag is in storage.
+  accounts.google.makeProvider = null;
+  const res = await makeSync().syncCalendars();
+  assert.deepEqual(res.results.google, { created: 1, updated: 0, removed: 1, forgotten: 0, error: null });
+  assert.equal(accounts.google.events().size, 3);
+  assert.equal(stored('google').checkStrays, false);
+  assertInSync('google');
+
+  // Nothing to look for once a run went through.
+  accounts.google.calls = [];
+  await sync.syncCalendars();
+  assert.equal(accounts.google.ops('listEvents').length, 0);
+});
+
+test('a calendar that was failing while a block moved catches up, even after the old time passed', async () => {
+  const sync = makeSync();
+  clock = at(0, 7);
+  await setProblems(problem('a', 'medium', 0), problem('b', 'easy', 0));
+  await sync.connectCalendar('google');
+  await sync.connectCalendar('outlook');
+  assert.equal(stored('outlook').events.a.start, at(0, 9));
+
+  // 07:05: the start time moves to 13:00 and b is deleted while Outlook is signed out.
+  clock = at(0, 7, 5);
+  accounts.outlook.signedIn = false;
+  await storage.updateSettings({ startTime: '13:00' });
+  await setProblems(problem('a', 'medium', 0));
+  await sync.syncCalendars();
+  assert.equal(stored('google').events.a.start, at(0, 13));
+
+  // 10:00: Outlook is back. Its 09:00 event had "started", but it's the stale one.
+  clock = at(0, 10);
+  accounts.outlook.signedIn = true;
+  const res = await sync.syncCalendars();
+  assert.equal(res.results.outlook.updated, 1);
+  assert.equal(accounts.outlook.events().get(stored('outlook').events.a.id).start, at(0, 13));
+  assertInSync('outlook');
 });
 
 test('a sign-in error marks only that provider for reconnect; the others keep syncing', async () => {
@@ -588,21 +788,72 @@ test('disconnect keeps the connection when the calendar cannot be deleted, unles
   assert.deepEqual(counts.signOut, []);
 
   assert.deepEqual(await sync.disconnectCalendar('google', { force: true }), { status: 'disconnected' });
-  assert.equal(stored('google'), undefined);
+  // The calendar stays in the account, so its id and events are remembered for
+  // a later Connect; nothing that signs in is kept.
+  assert.deepEqual(stored('google'), {
+    connected: false,
+    calendarId: before.calendarId,
+    events: before.events,
+    checkStrays: false,
+    account: 'me@google.test',
+  });
   assert.deepEqual(counts.signOut, ['google']);
+  assert.deepEqual((await sync.syncCalendars()).results, {});
 });
 
 test('disconnect with sign-in gone needs force; disconnecting nothing is fine', async () => {
   const sync = makeSync();
   await sync.connectCalendar('outlook');
   accounts.outlook.signedIn = false;
-  assert.equal((await sync.disconnectCalendar('outlook')).status, 'error');
+  assert.deepEqual(await sync.disconnectCalendar('outlook'), {
+    status: 'error',
+    error: 'Sign-in expired. Reconnect in Settings.',
+    reconnect: true,
+  });
+  // Settings now offers Reconnect, after which Disconnect can delete the calendar.
+  assert.equal(stored('outlook').needsReconnect, true);
+  assert.equal(stored('outlook').connected, true);
+  assert.equal(stored('outlook').disconnecting, undefined);
   assert.equal((await sync.disconnectCalendar('outlook', { force: true })).status, 'disconnected');
-  assert.equal(stored('outlook'), undefined);
+  assert.equal(stored('outlook').connected, false);
+  assert.equal(stored('outlook').auth, undefined);
 
   counts.makeProvider = [];
   assert.deepEqual(await sync.disconnectCalendar('apple'), { status: 'disconnected' });
   assert.equal(counts.makeProvider.length, 0);
+});
+
+test('a disconnect stopped after the calendar was deleted is finished by the next sync, not undone', async () => {
+  await setProblems(problem('a', 'easy', 1));
+  await makeSync().connectCalendar('google');
+  // The worker stops after the calendar is deleted, before the state is removed.
+  const dying = makeSync({
+    updateCalendarState: (name, updater) =>
+      storage.updateCalendarState(name, (prev) => {
+        const next = updater(prev);
+        if (next === null) throw new Error('worker stopped');
+        return next;
+      }),
+  });
+  await assert.rejects(dying.disconnectCalendar('google'), /worker stopped/);
+  assert.equal(accounts.google.calendars.size, 0);
+  assert.equal(stored('google').disconnecting, true);
+
+  // The restarted worker finishes it; offline, it waits for the next sync.
+  const restarted = makeSync();
+  accounts.google.before = (op) => {
+    if (op === 'deleteCalendar') throw new CalendarError("Couldn't reach Google Calendar.");
+  };
+  assert.deepEqual((await restarted.syncCalendars()).results, {});
+  assert.equal(stored('google').disconnecting, true);
+  assert.equal(stored('google').lastError, "Couldn't reach Google Calendar.");
+
+  accounts.google.before = null;
+  assert.deepEqual((await restarted.syncCalendars()).results, {});
+  assert.equal(stored('google'), undefined);
+  assert.equal(accounts.google.calendars.size, 0);
+  assert.equal(accounts.google.ops('createEvent').length, 1);
+  assert.deepEqual(counts.signOut, ['google']);
 });
 
 test('a sync that finishes after a disconnect does not bring the provider back', async () => {

@@ -4,7 +4,7 @@ import {
   getPending,
   getSettings,
   saveSettings,
-  saveProblemMap,
+  updateProblemMap,
   onProblemsChanged,
   onPendingChanged,
   onSettingsChanged,
@@ -177,13 +177,19 @@ function notifyPending(detected) {
 }
 
 async function checkDue() {
-  const map = await getProblemMap();
-  const problems = Object.values(map);
   const now = Date.now();
+  let problems = [];
+  let due = [];
 
   // notifiedFor remembers which due date we already notified about, so each
   // scheduled review notifies once and rescheduling naturally re-arms it.
-  const due = problems.filter((p) => isDue(p, now) && p.notifiedFor !== p.dueAt);
+  // Marked under the storage lock, so a rating saved meanwhile isn't undone.
+  await updateProblemMap((map) => {
+    problems = Object.values(map);
+    due = problems.filter((p) => isDue(p, now) && p.notifiedFor !== p.dueAt);
+    for (const p of due) map[p.id] = { ...p, notifiedFor: p.dueAt };
+    return due.length ? map : null; // a write triggers onProblemsChanged → reschedule
+  });
   for (const p of due) {
     chrome.notifications.create(REVIEW_NOTIFICATION_PREFIX + p.id, {
       type: 'basic',
@@ -193,9 +199,7 @@ async function checkDue() {
       contextMessage: `Last rated ${p.rating}. Click to open the problem.`,
       priority: 2,
     });
-    map[p.id] = { ...p, notifiedFor: p.dueAt };
   }
-  if (due.length) await saveProblemMap(map); // triggers onProblemsChanged → reschedule
 
   await scheduleNextDue(problems);
   updateBadge();

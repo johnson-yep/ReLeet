@@ -7,7 +7,7 @@ import {
   onLeetCodeStateChanged,
   onCalendarsChanged,
 } from '../lib/storage.js';
-import { isGoogleClientIdConfigured } from '../lib/calendars/google.js';
+import { chromeGoogleAuth, isGoogleClientIdConfigured } from '../lib/calendars/google.js';
 import { isOutlookConfigured } from '../lib/calendars/outlook.js';
 
 const $ = (id) => document.getElementById(id);
@@ -56,6 +56,10 @@ async function send(message) {
   try {
     return (await chrome.runtime.sendMessage(message)) ?? { status: 'error', error: 'No answer from ReLeet.' };
   } catch (e) {
+    // Chrome stopped the worker before it answered (restarted, or it waited too long).
+    if (/message (channel|port) closed|receiving end does not exist/i.test(e?.message ?? '')) {
+      return { status: 'error', error: 'ReLeet stopped before it finished. Try again.' };
+    }
     return { status: 'error', error: e.message };
   }
 }
@@ -309,12 +313,25 @@ async function connect(provider) {
       return;
     }
   }
+  // Google's consent runs from this page: with a Chrome sign-in and 2FA it can
+  // take minutes, longer than Chrome keeps the worker waiting on one request.
+  // The worker then gets the token Chrome cached. Started before any await,
+  // while the click still counts as a user gesture.
+  const googleSignIn = name === 'google' ? chromeGoogleAuth().getToken(true) : null;
   setCard(name, {
     busy: 'connect',
     forceable: false,
     message: name === 'apple' ? 'Checking the password…' : 'Finish signing in in the window that opened.',
     kind: '',
   });
+  if (googleSignIn) {
+    try {
+      await googleSignIn;
+    } catch (e) {
+      setCard(name, { busy: null, message: e?.message || "Couldn't sign in to Google.", kind: 'error' });
+      return;
+    }
+  }
   const result = await send({ type: 'calendar-connect', provider: name, credentials });
   if (result.status === 'connected') {
     if (name === 'apple') appleFields.appPassword.value = '';
@@ -342,18 +359,22 @@ async function disconnect(provider, force = false) {
     setCard(name, {
       busy: null,
       forceable: false,
-      message: force ? 'Disconnected. The “ReLeet” calendar is still in your account; you can delete it there.' : 'Disconnected.',
+      message: force
+        ? 'Disconnected. The “ReLeet” calendar is still in your account: delete it there, ' +
+          'or connect again to pick it up.'
+        : 'Disconnected.',
       kind: 'ok',
     });
   } else {
     // Usually offline or the sign-in expired. Forcing forgets the calendar
     // without deleting it, so the user is told it stays behind.
+    const fix = result.reconnect ? 'Reconnect, then Disconnect again to delete it, or' : 'Try again later, or';
     setCard(name, {
       busy: null,
       forceable: true,
       message:
         `Couldn't delete the “ReLeet” calendar: ${sentence(result.error ?? 'unknown error')} ` +
-        '“Disconnect anyway” forgets it here and leaves it in your account.',
+        `${fix} “Disconnect anyway” to leave it in your account.`,
       kind: 'error',
     });
   }
