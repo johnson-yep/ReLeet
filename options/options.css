@@ -23,8 +23,8 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margi
 dt { color: var(--muted); }
 dd { margin: 0; overflow-wrap: anywhere; }
 
-.error { color: var(--hard); }
-.ok { color: var(--easy); }
+.error { color: var(--hard-text); }
+.ok { color: var(--easy-text); }
 
 input[type="email"], input[type="time"], input[type="number"] {
   font: inherit;
@@ -46,6 +46,10 @@ input[type="email"], input[type="time"], input[type="number"] {
 .calendar-card.needs-attention { border-color: var(--medium); }
 .calendar-card .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .calendar-card p { margin: 6px 0 0; }
+.calendar-card .card-message:empty { margin: 0; }
+/* Focus lands on the heading while the card's buttons are disabled (options.js). */
+.calendar-card h3:focus { outline: none; }
+.calendar-card h3:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .calendar-card .button-row { margin-bottom: 0; }
 .calendar-card .fields { display: grid; gap: 6px; margin-top: 8px; }
 .calendar-card .fields input { width: 100%; }
@@ -57,8 +61,8 @@ input[type="email"], input[type="time"], input[type="number"] {
   color: var(--muted);
   white-space: nowrap;
 }
-.badge.on { color: var(--easy); border-color: var(--easy); }
-.badge.warn { color: var(--medium); border-color: var(--medium); }
+.badge.on { color: var(--easy-text); border-color: var(--easy); }
+.badge.warn { color: var(--medium-text); border-color: var(--medium); }
 
 #schedule-form { display: grid; gap: 10px; }
 .field-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
@@ -66,9 +70,9 @@ fieldset.field-row { border: none; padding: 0; }
 fieldset.field-row legend { padding: 0; margin-bottom: 6px; }
 .duration { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
 .duration input { width: 64px; font-weight: normal; }
-.duration.easy { color: var(--easy); }
-.duration.medium { color: var(--medium); }
-.duration.hard { color: var(--hard); }
+.duration.easy { color: var(--easy-text); }
+.duration.medium { color: var(--medium-text); }
+.duration.hard { color: var(--hard-text); }
 .duration .unit { color: var(--muted); font-weight: normal; }
 .setup-needed { color: var(--fg); }
 #schedule-form > button { justify-self: start; }

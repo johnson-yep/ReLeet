@@ -10,8 +10,11 @@ and can put a review block for it in Google Calendar, Outlook / Microsoft 365 or
 2. **Load unpacked** → select this folder.
 3. After editing code, click the reload icon on the extension card.
 
-Detection, ratings, the popup and the `.ics` download work right away. Google and Outlook calendars need a
-one-time setup (your own client IDs); Apple needs an app-specific password. See [SETUP.md](SETUP.md).
+Detection, ratings, the popup and the `.ics` download work right away. Chrome only adds content scripts to
+pages loaded after an install or update, so ReLeet adds its script to leetcode.com tabs that are already open
+when it's installed, updated or reloaded (a tab Chrome put to sleep gets it when it reloads). Google and
+Outlook calendars need a one-time setup (your own client IDs); Apple needs an app-specific password. See
+[SETUP.md](SETUP.md). To share your copy or use it on a second computer, pin its ID first (SETUP.md, step 1).
 
 ## Layout
 
@@ -34,7 +37,7 @@ one-time setup (your own client IDs); Apple needs an app-specific password. See 
 | `background.js` | Service worker: alarms, LeetCode checks, calendar sync, messages, notifications, badge. |
 | `content/leetcode.js` | Content script on leetcode.com: spots Accepted submissions and shows the rating prompt. |
 | `popup/` | Popup: rate new submissions, due today, upcoming, manual add, LeetCode / calendar status. |
-| `options/` | Settings: LeetCode username, calendars, schedule. |
+| `options/` | Settings: LeetCode username, calendars, schedule, test notification. |
 
 ## How detection works
 
@@ -53,7 +56,8 @@ Settings instead; a typed username is never replaced by auto-detection.
 
 The **first check** for a username only notes what's already there, so past solves aren't queued.
 **Import recent** (Settings) queues your most recent accepted problems (LeetCode returns about 20) that
-aren't tracked yet.
+aren't tracked yet. It also queues anything a background check would have (such as a review solved on
+another device since the last check).
 
 Several accepted submissions of one problem on the same day count once. Solving a problem you already
 track counts as a review of it.
@@ -61,9 +65,13 @@ track counts as a review of it.
 ## Rating
 
 Right after an Accepted submission, a small prompt on leetcode.com asks how hard it felt:
-**Easy · 7d**, **Medium · 3d**, **Hard · 1d**, or **Later**. Ignored or "Later" solves, and solves found by
+**Easy · 7d**, **Medium · 3d**, **Hard · 1d**, or **Later**. The prompt never takes keyboard focus, so you can
+keep typing in the editor; press **Alt+Shift+R** (**Option+Shift+R** on a Mac) to move focus to it, then
+Tab / Enter to rate or Escape for Later. Ignored or "Later" solves, and solves found by
 the background check, wait under **Rate new submissions** in the popup. Solves found in the background also
-raise a system notification (clicking it opens the popup); solves on this page don't, the prompt is enough.
+raise a system notification (clicking it opens the popup, or the same list in a tab when Chrome can't show
+the popup); solves on this page don't, the prompt is enough.
+A solve from the last couple of minutes on a problem that's open in a tab is left to that tab's prompt too.
 
 Problems tracked before v0.3 (including ones detected from NeetCode) stay as they are.
 
@@ -102,6 +110,9 @@ with the reminder.
   expired, Reconnect first and then Disconnect. Otherwise (e.g. offline) you can disconnect anyway and delete
   the calendar yourself; ReLeet remembers it (without any sign-in), so connecting again later picks it up
   instead of filling it twice.
+- If you delete the ReLeet calendar in the calendar app instead, the next sync makes a new one with all
+  upcoming reviews. In Outlook that includes a calendar sitting in Deleted Items, which nobody sees. To stop
+  syncing, Disconnect.
 - If an update fails (offline, expired sign-in), it's retried every 15 minutes and on the next change. When
   sign-in is needed, the popup shows a **Reconnect** link.
 
@@ -117,8 +128,10 @@ and import it into any calendar app yourself. Later changes in ReLeet don't upda
 ### What is stored and sent where
 
 Everything stays in this browser's `chrome.storage.local`. Microsoft tokens and the Apple app-specific
-password are stored there **unencrypted**. Requests go only to leetcode.com, Google's, Microsoft's and
-Apple's calendar and sign-in endpoints.
+password are stored there **unencrypted**. The worker limits that storage to ReLeet's own pages and itself
+(`setAccessLevel('TRUSTED_CONTEXTS')`), so the content script on leetcode.com can't read it; it only sends
+the worker messages, and only of three kinds (signed-in user, accepted solve, rating). Requests go only to
+leetcode.com, Google's, Microsoft's and Apple's calendar and sign-in endpoints.
 
 ## Testing
 
@@ -129,6 +142,7 @@ npm test
 Runs every `test/*.test.js` with Node's built-in runner (Node 22+, no dependencies, no network: `fetch` and
 `chrome.*` are faked, see `test/helpers/fake-chrome.js`).
 
-To test review notifications, click ⏰ on an upcoming problem to make it due now. A notification should
-appear within a few seconds; clicking it opens the problem.
+To test notifications, use Settings → **Notifications** → **Send a test notification**. It shows the
+reminder for the review due soonest (clicking it opens the problem) without changing its due date or
+calendar block.
 Service worker logs: `chrome://extensions` → ReLeet → "service worker".

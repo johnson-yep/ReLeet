@@ -1,7 +1,6 @@
 import {
   getProblems,
-  getProblem,
-  saveProblem,
+  updateProblemMap,
   deleteProblem,
   getPending,
   dismissPending,
@@ -21,7 +20,6 @@ import {
   recordReview,
   groupByDue,
   startOfDay,
-  dayKey,
   dayStartMs,
   reviewDay,
   RATINGS,
@@ -31,6 +29,8 @@ import { createReviewInvite, slotForProblem } from '../lib/calendar.js';
 import { ratePending } from '../lib/rating.js';
 
 const $ = (id) => document.getElementById(id);
+// Opened in a tab (a notification click when Chrome couldn't show the popup).
+if (new URLSearchParams(location.search).has('tab')) document.body.classList.add('in-tab');
 const template = $('problem-template');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CALENDAR_NAMES = { google: 'Google', outlook: 'Outlook', apple: 'Apple' };
@@ -79,18 +79,21 @@ function timeAgo(ms) {
   return hours < 24 ? `${hours} h ago` : formatDate(ms);
 }
 
-function button(text, className, onClick, title) {
+// `action` names what the button does, so focus can find it again after a re-render.
+function button(text, className, onClick, title, action = null) {
   const b = document.createElement('button');
   b.type = 'button';
   b.textContent = text;
   b.className = className;
   if (title) b.title = title;
+  if (action) b.dataset.action = action;
   b.addEventListener('click', onClick);
   return b;
 }
 
-function problemItem({ title, url }, meta, actions) {
+function problemItem({ id, title, url }, meta, actions) {
   const li = template.content.firstElementChild.cloneNode(true);
+  li.dataset.id = id;
   const link = li.querySelector('.problem-title');
   link.textContent = title;
   link.href = url;
@@ -101,7 +104,7 @@ function problemItem({ title, url }, meta, actions) {
 
 function ratingButtons(onRate, verb) {
   return RATINGS.map((rating) =>
-    button(label(rating)[0], `rating ${rating}`, () => onRate(rating), `${verb} — felt ${rating}`),
+    button(label(rating)[0], `rating ${rating}`, () => onRate(rating), `${verb} — felt ${rating}`, rating),
   );
 }
 
@@ -118,12 +121,12 @@ function renderPendingItem(s) {
   const tracked = problems.some((p) => p.id === s.id);
   const meta = [
     s.submittedAt ? `submitted ${formatDate(s.submittedAt)}` : 'imported',
-    s.topic,
+    s.topic, // only on rows left over from v0.2's NeetCode / GitHub sync
     tracked ? 'counts as a review' : null,
   ].filter(Boolean).join(' · ');
   return problemItem(s, meta, [
     ...ratingButtons((rating) => ratePending(s.id, rating), 'Rate'),
-    button('✕', 'icon-btn', () => dismissPending([s.id]), 'Dismiss without tracking'),
+    button('✕', 'icon-btn', () => dismissPending([s.id]), 'Dismiss without tracking', 'dismiss'),
   ]);
 }
 
@@ -136,9 +139,7 @@ function renderProblem(problem, isDueToday) {
     (reviews ? ` · ${reviews} review${reviews > 1 ? 's' : ''}` : '');
 
   // Rating a due problem counts as completing the review and reschedules it.
-  const actions = isDueToday
-    ? ratingButtons((rating) => review(problem.id, rating), 'Reviewed')
-    : [button('⏰', 'icon-btn', () => makeDueNow(problem.id), 'Make due now (for testing notifications)')];
+  const actions = isDueToday ? ratingButtons((rating) => review(problem.id, rating), 'Reviewed') : [];
   // A connected calendar already gets the block; the download is for everyone else.
   if (!connectedCalendars().length) {
     actions.push(
@@ -147,10 +148,11 @@ function renderProblem(problem, isDueToday) {
         'icon-btn',
         () => downloadCalendarInvite(problem),
         `Add review on ${formatDate(reviewDate(problem))} to a calendar`,
+        'download',
       ),
     );
   }
-  actions.push(button('✕', 'icon-btn', () => remove(problem), 'Delete'));
+  actions.push(button('✕', 'icon-btn', () => remove(problem), 'Delete', 'delete'));
 
   const li = problemItem(problem, meta, actions);
   li.title = `Review date: ${formatDate(reviewDate(problem))}` + (block ? ` at ${formatTime(block.start)}` : '');
@@ -176,7 +178,22 @@ function renderList(listEl, emptyEl, items, renderItem) {
   if (emptyEl) emptyEl.hidden = items.length > 0;
 }
 
+// The lists are rebuilt on every change, which drops keyboard focus. Remember
+// the focused button by list, problem and action, and focus its replacement.
+function focusedRowButton() {
+  const el = document.activeElement;
+  const li = el?.closest?.('li[data-id]');
+  return li && el.dataset.action ? { list: li.parentElement.id, id: li.dataset.id, action: el.dataset.action } : null;
+}
+
+function refocus(key) {
+  if (!key || document.activeElement !== document.body) return;
+  const row = [...$(key.list).children].find((li) => li.dataset.id === key.id);
+  row?.querySelector(`button[data-action="${key.action}"]`)?.focus();
+}
+
 function render() {
+  const focused = focusedRowButton();
   const { dueToday, upcoming } = groupByDue(problems);
   const newestFirst = [...pending].sort((a, b) => (b.submittedAt ?? 0) - (a.submittedAt ?? 0));
   $('pending-section').hidden = pending.length === 0;
@@ -185,6 +202,7 @@ function render() {
   renderList($('due-list'), $('due-empty'), dueToday, (p) => renderProblem(p, true));
   renderList($('upcoming-list'), $('upcoming-empty'), upcoming, (p) => renderProblem(p, false));
   $('summary').textContent = `${dueToday.length} due · ${problems.length} tracked`;
+  refocus(focused);
 }
 
 function setStatus(el, text, className = 'muted') {
@@ -197,9 +215,11 @@ function renderLeetCodeStatus() {
   const status = $('sync-status');
   $('sync-now').hidden = !username;
   if (!username) {
-    setStatus(status, 'LeetCode not connected');
+    setStatus(status, 'LeetCode not connected: open leetcode.com while signed in');
   } else if (leetcode.lastError) {
-    setStatus(status, `LeetCode: ${leetcode.lastError}`, 'error');
+    // LeetCode's own messages already say "LeetCode".
+    const error = String(leetcode.lastError);
+    setStatus(status, /leetcode/i.test(error) ? error : `LeetCode: ${error}`, 'error');
   } else {
     const checked = leetcode.username === username && leetcode.lastSyncAt ? timeAgo(leetcode.lastSyncAt) : 'never';
     setStatus(status, `@${username} · checked ${checked}`);
@@ -217,10 +237,15 @@ function calendarWarning(name, state) {
   p.className = 'banner';
   const text = document.createElement('span');
   const calendar = CALENDAR_FULL_NAMES[name];
-  // A sign-in problem needs the user; anything else (offline, server trouble) retries on its own.
-  text.textContent = state.needsReconnect
-    ? `${calendar} needs you to sign in again.`
-    : `Couldn't update ${calendar}: ${sentence(String(state.lastError))} Retrying every 15 minutes.`;
+  // A sign-in problem needs the user; anything else (offline, server trouble)
+  // retries on its own. Error messages give the cause only; the next step is added here.
+  if (state.needsReconnect) {
+    text.textContent = state.lastError
+      ? `${calendar}: ${sentence(String(state.lastError))}`
+      : `${calendar} needs you to sign in again.`;
+  } else {
+    text.textContent = `Couldn't update ${calendar}: ${sentence(String(state.lastError))} Retrying every 15 minutes.`;
+  }
   p.append(text, button(state.needsReconnect ? 'Reconnect' : 'Settings', 'link-btn', openSettings));
   return p;
 }
@@ -234,15 +259,14 @@ function renderCalendarStatus() {
   $('calendar-warnings').replaceChildren(...failing.map((name) => calendarWarning(name, calendars[name])));
 }
 
-async function review(id, rating) {
-  const problem = await getProblem(id);
-  if (problem) await saveProblem(recordReview(problem, rating));
-}
-
-async function makeDueNow(id) {
-  const problem = await getProblem(id);
-  const now = Date.now();
-  if (problem) await saveProblem({ ...problem, dueAt: now, dueDay: dayKey(now) });
+// Read and write under one lock, so a rating saved from the leetcode.com
+// prompt at the same moment isn't overwritten.
+function review(id, rating) {
+  return updateProblemMap((map) => {
+    if (!map[id]) return null;
+    map[id] = recordReview(map[id], rating);
+    return map;
+  });
 }
 
 async function remove(problem) {
@@ -262,7 +286,10 @@ $('add-form').addEventListener('submit', async (event) => {
   error.hidden = true;
 
   // Re-adding a tracked problem counts as another review rather than a reset.
-  await saveProblem(applySolve(await getProblem(parsed.id), parsed, rating));
+  await updateProblemMap((map) => {
+    map[parsed.id] = applySolve(map[parsed.id] ?? null, parsed, rating);
+    return map;
+  });
   $('problem-input').value = '';
 });
 
@@ -293,7 +320,14 @@ onPendingChanged((list) => { pending = list; render(); });
 onScheduleChanged((next) => { schedule = next; render(); });
 onSettingsChanged((next) => { settings = next; renderLeetCodeStatus(); });
 onLeetCodeStateChanged((next) => { leetcode = next; renderLeetCodeStatus(); });
-onCalendarsChanged((next) => { calendars = next; renderCalendarStatus(); render(); });
+// A sync saves the calendars key after every event it writes. The lists only
+// care which calendars are connected (for 📅), so most saves skip them.
+onCalendarsChanged((next) => {
+  const before = connectedCalendars().join();
+  calendars = next;
+  renderCalendarStatus();
+  if (connectedCalendars().join() !== before) render();
+});
 
 [problems, pending, settings, leetcode, schedule, calendars] = await Promise.all([
   getProblems(),

@@ -1,7 +1,7 @@
 # Setting up ReLeet
 
-LeetCode detection, ratings and the popup work as soon as the extension is loaded. Calendars need a little
-setup first:
+LeetCode detection, ratings and the popup work as soon as the extension is loaded, including in leetcode.com
+tabs that were already open (ReLeet adds itself to them). Calendars need a little setup first:
 
 | Calendar | What you need | Who does it |
 | --- | --- | --- |
@@ -9,8 +9,15 @@ setup first:
 | Outlook / Microsoft 365 | A Microsoft Entra app registration, its client ID pasted into `lib/config.js` | The owner, once |
 | Apple iCloud | An app-specific password | Each person, in Settings |
 
-Other people using your copy of the extension don't repeat the Google or Microsoft steps; they just click
-Connect and sign in. For Google, add each of them as a test user (step 2.5; up to 100 people).
+**Sharing your copy, or using it on a second computer?** Pin the extension's ID first (step 1, "Pin the
+ID") and keep the `key` line in `manifest.json` when you pass the folder on. Then the other copies have the
+same ID, so they don't repeat the Google or Microsoft steps: people just click Connect and sign in. For
+Google, add each of them as a test user (step 2.5; up to 100 people).
+
+Without a pinned ID, every copy in a different folder location gets its own ID, and Google and Microsoft
+only accept the ID they were set up with: Connect fails with "bad client id" (Google) or AADSTS50011
+(Microsoft). Each such copy would need its own Google client (a Chrome Extension client with that copy's
+ID, and that client ID in that copy's `manifest.json`) and its own redirect URI added in Entra (step 3.3).
 
 Until a client ID is filled in, that calendar's **Connect** button in Settings stays disabled and says
 "One-time setup needed".
@@ -22,13 +29,15 @@ Until a client ID is filled in, that calendar's **Connect** button in Settings s
 3. The ReLeet card shows an **ID**: 32 letters, like `nobbhhofaljcgpcidedpnciilnbcblca`. Copy it. Both Google
    and Microsoft need it.
 
-The ID of an unpacked extension comes from the folder's location. **If you move or rename the folder, the ID
-changes** and the Google and Microsoft setups stop working until you update them with the new ID.
+The ID of an unpacked extension comes from the folder's location. **If you move or rename the folder, or
+load a copy of it on another computer or for someone else, the ID is different** there, and the Google and
+Microsoft setups only work for the ID they were made with.
 
-### Optional: pin the ID
+### Pin the ID (needed to share it or use it on more than one computer)
 
-To keep the same ID wherever the folder lives, give the extension a fixed key. In a terminal (macOS or Linux;
-on Windows use Git Bash or WSL), outside the extension folder:
+To keep the same ID wherever the folder lives, give the extension a fixed key. Do this **before** the Google
+and Microsoft steps: pinning changes the ID, and both setups use it. In a terminal (macOS or Linux; on Windows
+use Git Bash or WSL), outside the extension folder:
 
 ```sh
 openssl genrsa 2048 | openssl pkcs8 -topk8 -nocrypt -out releet-key.pem
@@ -42,8 +51,9 @@ The second command prints a long line. Add it to `manifest.json` as `"key": "<th
 openssl rsa -in releet-key.pem -pubout -outform DER | shasum -a 256 | head -c32 | tr 0-9a-f a-p
 ```
 
-(On Linux, `sha256sum` works in place of `shasum -a 256`.) Keep `releet-key.pem` private and out of the
-extension folder.
+(On Linux, `sha256sum` works in place of `shasum -a 256`.) The `key` line is a public key: it stays in
+`manifest.json` and goes along with every copy you share. Keep `releet-key.pem` private and out of the
+extension folder; it isn't needed to load the extension.
 
 ## 2. Google Calendar
 
@@ -64,8 +74,9 @@ Google Calendar signs in with the Google account Chrome itself is signed in to (
 4. **Scope.** Open **Data Access** (older consoles: the **Scopes** step) → **Add or remove scopes**. Filter for
    `calendar.app.created`, tick `.../auth/calendar.app.created`, click **Update**, then **Save**.
 5. **Test users.** Open **Audience** (older consoles: the **Test users** step). Publishing status stays
-   **Testing**. Under **Test users** click **Add users** and add your Gmail address (and anyone else who will
-   use your copy, up to 100).
+   **Testing**. Under **Test users** click **Add users** and add the Google account Chrome is signed in to (see
+   above; it may not be the one you use for Cloud Console), plus anyone else who will use your copy, up to 100.
+   An account that isn't listed gets "Access blocked" when it connects.
 6. **Client ID.** Open **Clients** (older consoles: **APIs & Services** → **Credentials** → **Create
    credentials** → **OAuth client ID**) → **Create client**.
    - Application type: **Chrome Extension**.
@@ -90,36 +101,49 @@ What to expect:
 - Google shows **"Google hasn't verified this app"**. That's normal for a personal project: click
   **Continue** (sometimes behind **Advanced**). Only accounts listed as test users get this far.
 - While the app is in **Testing**, Google may expire the permission after about a week. ReLeet then shows
-  **Reconnect** in the popup; click it and Connect again. To avoid this, go to **Audience** and click
-  **Publish app** ("In production"). The unverified-app screen stays, which is fine for personal use.
+  **Reconnect** in the popup; click it, then **Reconnect** on the Google Calendar card. To avoid this, go to
+  **Audience** and click **Publish app** ("In production"). The unverified-app screen stays, which is fine for
+  personal use.
 
 ## 3. Outlook / Microsoft 365
 
 Works with personal Microsoft accounts (Outlook.com, Hotmail, Live) and with work or school accounts.
 
+Microsoft changes the Entra admin center's menus from time to time; where the names differ, the older
+ones are in brackets.
+
 1. Go to [entra.microsoft.com](https://entra.microsoft.com) (or [portal.azure.com](https://portal.azure.com) →
    **Microsoft Entra ID**) and sign in. If your account has no directory yet, signing up for a free Azure
-   account creates one.
-2. **Applications** → **App registrations** → **New registration**.
+   account creates one (Microsoft may ask for a phone number and a card to check who you are).
+2. **Register the app.** **Entra ID** → **App registrations** → **New registration** (older menus:
+   **Identity** → **Applications** → **App registrations**; or type "App registrations" in the search bar at
+   the top).
    - Name: `ReLeet`.
-   - Supported account types: **Accounts in any organizational directory (Any Microsoft Entra ID tenant -
-     Multitenant) and personal Microsoft accounts (e.g. Skype, Xbox)**.
-   - Redirect URI: platform **Single-page application (SPA)**, URI
-     `https://<extension-id>.chromiumapp.org/` with your extension ID from step 1, **including the trailing
-     slash**, e.g. `https://nobbhhofaljcgpcidedpnciilnbcblca.chromiumapp.org/`.
-   - Click **Register**.
-3. On the app's **Overview** page, copy the **Application (client) ID**.
-4. **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions**. Tick
+   - Supported account types: **Any Entra ID Tenant + Personal Microsoft accounts** (older label: **Accounts in
+     any organizational directory (Any Microsoft Entra ID tenant - Multitenant) and personal Microsoft
+     accounts**).
+   - If the form also has a **Redirect URI** field, you can fill it in here as in step 3 (platform
+     **Single-page application (SPA)**). Most forms no longer have it.
+   - Click **Register**. The app's **Overview** page opens.
+3. **Redirect URI.** In the app, under **Manage**, open **Authentication**. On the **Redirect URI
+   configuration** tab click **Add Redirect URI** (older page: **Platform configurations** → **Add a
+   platform**), pick **Single-page application**, and enter
+   `https://<extension-id>.chromiumapp.org/` with your extension ID from step 1, **including the trailing
+   slash**, e.g. `https://nobbhhofaljcgpcidedpnciilnbcblca.chromiumapp.org/`. Click **Configure**. If you
+   already entered it in step 2, just check it's listed here under Single-page application. Without it,
+   Microsoft shows an error page instead of the sign-in.
+4. On the app's **Overview** page, copy the **Application (client) ID**.
+5. **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions**. Tick
    `Calendars.ReadWrite`, and under **OpenId permissions** tick `offline_access`, `openid` and `profile`.
    Click **Add permissions**. (`User.Read`, added by default, can stay.) No client secret is needed.
-5. Open `lib/config.js` in the ReLeet folder and paste the ID:
+6. Open `lib/config.js` in the ReLeet folder and paste the ID:
 
    ```js
    export const OUTLOOK_CLIENT_ID = '00000000-0000-0000-0000-000000000000';
    ```
 
-6. Reload ReLeet on `chrome://extensions`.
-7. In Settings → **Outlook / Microsoft 365**, click **Connect**, sign in and accept.
+7. Reload ReLeet on `chrome://extensions`.
+8. In Settings → **Outlook / Microsoft 365**, click **Connect**, sign in and accept.
 
 What to expect:
 
@@ -154,8 +178,17 @@ Good to know:
 - **Connect stays disabled with "One-time setup needed"**: the client ID is missing or still the placeholder,
   or the extension wasn't reloaded after you pasted it.
 - **Google: "bad client id" or an OAuth error page**: the Item ID in Google Cloud doesn't match the extension
-  ID. This happens after moving the folder; update the Item ID or pin the ID (step 1).
+  ID. This happens after moving the folder, or in a copy on another computer or someone else's that has no
+  pinned ID; update the Item ID or pin the ID (step 1).
+- **Microsoft: "No reply address is registered"** (AADSTS500113): the app has no redirect URI yet. Add it as
+  in step 3.3: App registrations → ReLeet → **Authentication**.
 - **Microsoft: "redirect URI ... does not match"** (AADSTS50011): the SPA redirect URI must be exactly
   `https://<extension-id>.chromiumapp.org/`, trailing slash included, under the **Single-page application**
-  platform (not Web).
+  platform (not Web), in App registrations → ReLeet → **Authentication**. In a copy with a different ID (see
+  step 1), add that copy's URI too, or pin the ID.
+- **Microsoft: "sign-in was closed before it finished"**: you closed the sign-in window. If Microsoft showed an
+  error page in it (an AADSTS code), see the two entries above.
+- **No prompt on leetcode.com right after installing or reloading ReLeet**: ReLeet adds itself to leetcode.com
+  tabs that are already open, but a tab Chrome had put to sleep only gets it when it reloads. Reload the tab.
+  Solves are still found by the background check within 15 minutes once your username is known.
 - **Errors from the service worker**: `chrome://extensions` → ReLeet → **service worker** opens its console.

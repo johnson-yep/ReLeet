@@ -110,7 +110,9 @@ const isCalendarError =
     assert.equal(err.reconnect, flags.reconnect ?? false);
     assert.equal(err.calendarMissing, flags.calendarMissing ?? false);
     assert.equal(err.notFound, flags.notFound ?? false);
-    if (flags.message) assert.match(err.message, flags.message);
+    // A string must match exactly; a RegExp anywhere.
+    if (typeof flags.message === 'string') assert.equal(err.message, flags.message);
+    else if (flags.message) assert.match(err.message, flags.message);
     return true;
   };
 
@@ -374,7 +376,8 @@ test('missing scope (403) → reconnect', async () => {
   await assert.rejects(p.ensureCalendar(CAL), isCalendarError({ reconnect: true }));
 });
 
-test('rate limits (403 rateLimitExceeded, 429) are plain errors that retry later', async () => {
+// Messages give the cause only: the sync retries every 15 minutes, and the UI says so once.
+test('rate limits (403 rateLimitExceeded, 429) are plain errors, without a retry promise', async () => {
   const { p } = provider([
     { method: 'GET', url: GOOGLE_API + CAL_PATH, respond: googleError(403, 'rateLimitExceeded') },
     {
@@ -383,13 +386,14 @@ test('rate limits (403 rateLimitExceeded, 429) are plain errors that retry later
       respond: json({ error: { code: 429, message: 'Too many' } }, 429, { 'Retry-After': '30' }),
     },
   ]);
-  await assert.rejects(p.ensureCalendar(CAL), isCalendarError({ message: /limiting/ }));
-  await assert.rejects(p.ensureCalendar(CAL), isCalendarError({ message: /30 s/ }));
+  await assert.rejects(p.ensureCalendar(CAL), isCalendarError({ message: 'Google Calendar is limiting requests.' }));
+  // Nothing retries after Retry-After's 30 s, so the message doesn't say it will.
+  await assert.rejects(p.ensureCalendar(CAL), isCalendarError({ message: 'Google Calendar is limiting requests.' }));
 });
 
 test('network failure is a plain error', async () => {
   const { p } = provider([{ method: 'GET', url: GOOGLE_API + CAL_PATH, respond: new TypeError('Failed to fetch') }]);
-  await assert.rejects(p.ensureCalendar(CAL), isCalendarError({ message: /Couldn't reach Google Calendar/ }));
+  await assert.rejects(p.ensureCalendar(CAL), isCalendarError({ message: "Couldn't reach Google Calendar." }));
 });
 
 test('400 shows Google’s message', async () => {
@@ -402,6 +406,36 @@ test('400 shows Google’s message', async () => {
     },
   ]);
   await assert.rejects(p.createEvent(CAL, slot), isCalendarError({ message: /invalid message/ }));
+});
+
+test('describeAccount names the calendar’s owner (dataOwner) once the calendar is known', async () => {
+  const created = provider(
+    [
+      {
+        method: 'POST',
+        url: `${GOOGLE_API}/calendars`,
+        json: { summary: 'ReLeet', description: 'Review blocks scheduled by ReLeet.', timeZone: 'Europe/Berlin' },
+        respond: json({ id: CAL, summary: 'ReLeet', dataOwner: 'owner@gmail.com' }),
+      },
+    ],
+    { getAccount: async () => 'profile@gmail.com' },
+  );
+  await created.p.ensureCalendar(null);
+  assert.equal(await created.p.describeAccount(), 'owner@gmail.com');
+
+  const kept = provider([
+    { method: 'GET', url: GOOGLE_API + CAL_PATH, respond: json({ id: CAL, dataOwner: 'owner@gmail.com' }) },
+  ]);
+  assert.equal(await kept.p.describeAccount(), null);
+  await kept.p.ensureCalendar(CAL);
+  assert.equal(await kept.p.describeAccount(), 'owner@gmail.com');
+
+  // No dataOwner in the answer: fall back to getAccount.
+  const bare = provider([{ method: 'GET', url: GOOGLE_API + CAL_PATH, respond: json({ id: CAL }) }], {
+    getAccount: async () => 'profile@gmail.com',
+  });
+  await bare.p.ensureCalendar(CAL);
+  assert.equal(await bare.p.describeAccount(), 'profile@gmail.com');
 });
 
 test('describeAccount uses getAccount and never throws', async () => {
@@ -429,7 +463,8 @@ function fakeIdentity(getAuthToken) {
     removeCachedAuthToken: async ({ token }) => {
       identity.removed.push(token);
     },
-    getProfileUserInfo: async () => ({ email: 'me@gmail.com', id: '1' }),
+    // What Chrome answers without the "identity.email" permission, which ReLeet doesn't have.
+    getProfileUserInfo: async () => ({ email: '', id: '' }),
   };
   return identity;
 }
@@ -449,7 +484,7 @@ test('chromeGoogleAuth.getToken asks chrome.identity for the calendar scope', as
 test('chromeGoogleAuth.getToken rejects a token without the calendar scope', async () => {
   const identity = fakeIdentity(async () => ({ token: 'abc', grantedScopes: ['openid'] }));
   installFakeChrome({}, { identity });
-  await assert.rejects(chromeGoogleAuth().getToken(true), isCalendarError({ reconnect: true, message: /not granted/ }));
+  await assert.rejects(chromeGoogleAuth().getToken(true), isCalendarError({ reconnect: true, message: /wasn't granted/ }));
   assert.deepEqual(identity.removed, ['abc']);
 });
 
@@ -468,8 +503,40 @@ test('chromeGoogleAuth.getToken: revoked → reconnect, offline → plain error'
   message = 'The user did not approve access.';
   await assert.rejects(auth.getToken(true), isCalendarError({ reconnect: true, message: /did not approve/ }));
   message = 'OAuth2 request failed: Connection failed (-106).';
-  await assert.rejects(auth.getToken(false), isCalendarError({ reconnect: false }));
+  await assert.rejects(
+    auth.getToken(false),
+    isCalendarError({ reconnect: false, message: "Couldn't reach Google to sign in." }),
+  );
+  // Connect: nothing retries a failed first sign-in, so the user is told to.
+  await assert.rejects(
+    auth.getToken(true),
+    isCalendarError({ reconnect: false, message: /^Couldn't reach Google to sign in\. Check your connection and try again\.$/ }),
+  );
 });
+
+// Errors Chrome itself counts as transient (GoogleServiceAuthError::IsTransientError).
+for (const message of [
+  'OAuth2 request failed: Service unavailable; try again later (Service unavailable).',
+  'OAuth2 request failed: Request canceled.',
+  'OAuth2 request failed: Service responded with a token binding challenge.',
+]) {
+  test(`chromeGoogleAuth.getToken: "${message}" is a plain error, not a reconnect`, async () => {
+    installFakeChrome(
+      {},
+      {
+        identity: fakeIdentity(async () => {
+          throw new Error(message);
+        }),
+      },
+    );
+    const auth = chromeGoogleAuth();
+    await assert.rejects(
+      auth.getToken(false),
+      isCalendarError({ reconnect: false, message: 'Google sign-in is having trouble right now.' }),
+    );
+    await assert.rejects(auth.getToken(true), isCalendarError({ reconnect: false, message: /Try again/ }));
+  });
+}
 
 test('chromeGoogleAuth.removeToken removes it from the cache', async () => {
   const identity = fakeIdentity(async () => ({ token: 'abc' }));
@@ -524,10 +591,10 @@ test('chromeGoogleAuth.isConfigured checks the manifest client id', () => {
   assert.equal(isGoogleClientIdConfigured(' 42-x.apps.googleusercontent.com '), true);
 });
 
-test('chromeGoogleAuth.getAccount reads the profile email', async () => {
+test('chromeGoogleAuth.getAccount reads the profile email when Chrome gives one', async () => {
   const identity = fakeIdentity(async () => ({ token: 'abc' }));
   installFakeChrome({}, { identity });
+  assert.equal(await chromeGoogleAuth().getAccount(), null); // no identity.email permission
+  identity.getProfileUserInfo = async () => ({ email: 'me@gmail.com', id: '1' }); // with it
   assert.equal(await chromeGoogleAuth().getAccount(), 'me@gmail.com');
-  identity.getProfileUserInfo = async () => ({ email: '', id: '' }); // no identity.email permission
-  assert.equal(await chromeGoogleAuth().getAccount(), null);
 });

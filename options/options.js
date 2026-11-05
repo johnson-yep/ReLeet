@@ -84,7 +84,7 @@ function renderLeetCode() {
   if (!usernameDirty) $('username-input').value = username;
 
   $('username-note').textContent = !username
-    ? "Not set. Visit leetcode.com while signed in and it's picked up automatically, or type it here."
+    ? "Not set. Open (or reload) a leetcode.com page while signed in and it's picked up automatically, or type it here."
     : source === 'auto'
       ? 'Detected automatically from leetcode.com. Saving it here keeps it fixed.'
       : "Typed here. Signing in to leetcode.com as someone else won't change it.";
@@ -170,7 +170,11 @@ const PROVIDERS = [
   {
     name: 'google',
     title: 'Google Calendar',
-    about: 'Signs in with a Google account. ReLeet can only see the calendar it creates.',
+    about:
+      'Uses the Google account Chrome is signed in to (chrome://settings/people). ' +
+      'ReLeet can only see the calendar it creates.',
+    // Named in the Disconnect warning when Google didn't say whose calendar it is.
+    accountFallback: 'the Google account Chrome is signed in to',
     isConfigured: () => isGoogleClientIdConfigured(chrome.runtime.getManifest().oauth2?.client_id),
   },
   {
@@ -187,17 +191,27 @@ const PROVIDERS = [
   },
 ];
 
-// Per-card UI state that isn't in storage: what's in progress and the last message.
-const ui = Object.fromEntries(PROVIDERS.map((p) => [p.name, { busy: null, message: '', kind: '', forceable: false }]));
+// Per-card UI state that isn't in storage: what's in progress and the last
+// message. `signingIn`: Connect hasn't saved the connection yet.
+const ui = Object.fromEntries(
+  PROVIDERS.map((p) => [p.name, { busy: null, message: '', kind: '', forceable: false, signingIn: false }]),
+);
 
 // Created once and reused by every render, so what the user typed survives re-renders.
 const appleFields = {
-  appleId: h('input', { type: 'email', placeholder: 'Apple ID email', autocomplete: 'username', 'aria-label': 'Apple ID email' }),
+  appleId: h('input', {
+    type: 'email',
+    placeholder: 'Apple ID email',
+    autocomplete: 'username',
+    'aria-label': 'Apple ID email',
+    'data-action': 'apple-id',
+  }),
   appPassword: h('input', {
     type: 'password',
     placeholder: 'App-specific password (xxxx-xxxx-xxxx-xxxx)',
     autocomplete: 'off',
     'aria-label': 'App-specific password',
+    'data-action': 'apple-password',
   }),
 };
 
@@ -205,9 +219,10 @@ function cardStatus(state) {
   if (!state?.connected) return [h('p', { class: 'muted' }, 'Not connected.')];
   const synced = state.lastSyncAt ? `last synced ${timeAgo(state.lastSyncAt)}` : 'not synced yet';
   const lines = [h('p', {}, state.account ? `Connected as ${state.account} · ${synced}` : `Connected · ${synced}`)];
+  // Error messages give the cause only; the next step is added here.
   if (state.needsReconnect) {
-    lines.push(h('p', { class: 'error' }, 'Sign-in expired or was revoked. Reconnect to keep this calendar up to date.'));
-    if (state.lastError) lines.push(h('p', { class: 'muted' }, state.lastError));
+    const cause = state.lastError ? sentence(state.lastError) : 'Sign-in expired or was revoked.';
+    lines.push(h('p', { class: 'error' }, `${cause} Reconnect to keep this calendar up to date.`));
   } else if (state.lastError) {
     lines.push(h('p', { class: 'error' }, `Last update failed: ${sentence(state.lastError)} Retrying every 15 minutes.`));
   }
@@ -225,11 +240,27 @@ function appleForm(state) {
       'p',
       { class: 'muted' },
       'Create one at ',
-      h('a', { href: 'https://account.apple.com', target: '_blank', rel: 'noopener' }, 'account.apple.com'),
+      h(
+        'a',
+        { href: 'https://account.apple.com', target: '_blank', rel: 'noopener', 'data-action': 'apple-link' },
+        'account.apple.com',
+      ),
       ' → Sign-In and Security → App-Specific Passwords. It is stored unencrypted in this browser’s extension storage.',
     ),
   );
 }
+
+// Each card is built once. A render swaps what's inside it, except the message
+// line: it stays the same element, so a screen reader reads out each new
+// message (a live region inserted with its text already in it often isn't).
+const cards = Object.fromEntries(
+  PROVIDERS.map(({ name }) => {
+    const body = h('div', {});
+    const message = h('p', { role: 'status' });
+    return [name, { article: h('article', { id: `card-${name}` }, body, message), body, message }];
+  }),
+);
+$('calendar-cards').append(...Object.values(cards).map((card) => card.article));
 
 function renderCard(provider) {
   const { name, title, about } = provider;
@@ -250,7 +281,13 @@ function renderCard(provider) {
     buttons.push(
       h(
         'button',
-        { type: 'button', class: 'connect', disabled: !configured || busy, onclick: () => connect(provider) },
+        {
+          type: 'button',
+          class: 'connect',
+          'data-action': 'connect',
+          disabled: !configured || busy,
+          onclick: () => connect(provider),
+        },
         view.busy === 'connect' ? 'Connecting…' : connected ? 'Reconnect' : 'Connect',
       ),
     );
@@ -259,7 +296,7 @@ function renderCard(provider) {
     buttons.push(
       h(
         'button',
-        { type: 'button', class: 'disconnect', disabled: busy, onclick: () => disconnect(provider) },
+        { type: 'button', class: 'disconnect', 'data-action': 'disconnect', disabled: busy, onclick: () => disconnect(provider) },
         view.busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect',
       ),
     );
@@ -267,7 +304,13 @@ function renderCard(provider) {
       buttons.push(
         h(
           'button',
-          { type: 'button', class: 'force-disconnect', disabled: busy, onclick: () => disconnect(provider, true) },
+          {
+            type: 'button',
+            class: 'force-disconnect',
+            'data-action': 'force-disconnect',
+            disabled: busy,
+            onclick: () => disconnect(provider, true),
+          },
           'Disconnect anyway',
         ),
       );
@@ -275,28 +318,53 @@ function renderCard(provider) {
   }
 
   const showAppleForm = name === 'apple' && (!connected || state.needsReconnect);
-  return h(
-    'article',
-    { class: `calendar-card${connected && (state.needsReconnect || state.lastError) ? ' needs-attention' : ''}`, id: `card-${name}` },
-    h('div', { class: 'card-head' }, h('h3', {}, title), badge),
-    h('p', { class: 'muted' }, about),
-    configured
-      ? null
-      : h('p', { class: 'setup-needed' }, h('strong', {}, 'One-time setup needed'), ' — see SETUP.md in the extension folder.'),
-    cardStatus(state),
-    showAppleForm ? appleForm(state) : null,
-    h('div', { class: 'button-row' }, buttons),
-    view.message ? h('p', { class: view.kind || 'muted', role: 'status' }, view.message) : null,
+  const card = cards[name];
+  card.article.className = `calendar-card${connected && (state.needsReconnect || state.lastError) ? ' needs-attention' : ''}`;
+  card.body.replaceChildren(
+    ...[
+      // tabindex -1: where focus goes while the card's buttons are disabled.
+      h('div', { class: 'card-head' }, h('h3', { tabindex: '-1', 'data-action': 'heading' }, title), badge),
+      h('p', { class: 'muted' }, about),
+      configured
+        ? null
+        : h('p', { class: 'setup-needed' }, h('strong', {}, 'One-time setup needed'), ' — see SETUP.md in the extension folder.'),
+      cardStatus(state),
+      showAppleForm ? appleForm(state) : null,
+      h('div', { class: 'button-row' }, buttons),
+    ].flat().filter(Boolean),
   );
+  card.message.className = `card-message ${view.kind || 'muted'}`;
+  if (card.message.textContent !== view.message) card.message.textContent = view.message;
+}
+
+// Rebuilding a card replaces its buttons, which drops keyboard focus. Find
+// the focused control again by card and action and focus its replacement, or
+// the card's heading while that control is disabled (e.g. "Connecting…").
+function focusedCardControl() {
+  const el = document.activeElement;
+  const card = el?.closest?.('.calendar-card');
+  return card && el.dataset.action ? { card: card.id, action: el.dataset.action } : null;
+}
+
+function refocusCardControl(key) {
+  if (!key || document.activeElement !== document.body) return;
+  const card = document.getElementById(key.card);
+  const target = card?.querySelector(`[data-action="${key.action}"]`);
+  if (target && !target.disabled) target.focus();
+  else card?.querySelector('h3')?.focus();
 }
 
 function renderCalendars() {
-  // Re-rendering moves the reused Apple inputs, which drops focus; put it back.
-  const focused = document.activeElement;
-  $('calendar-cards').replaceChildren(...PROVIDERS.map(renderCard));
-  if (focused?.isConnected && focused !== document.activeElement) focused.focus();
+  const focused = focusedCardControl();
+  for (const provider of PROVIDERS) renderCard(provider);
+  refocusCardControl(focused);
   $('calendar-sync-now').hidden = !PROVIDERS.some((p) => calendars[p.name]?.connected);
 }
+
+// What the cards show of a calendar's stored state. A sync saves the state
+// after every event it writes; those saves change nothing on screen.
+const visibleState = (state) =>
+  state && [state.connected, state.account, state.lastSyncAt, state.lastError, state.needsReconnect];
 
 function setCard(name, patch) {
   Object.assign(ui[name], patch);
@@ -318,26 +386,37 @@ async function connect(provider) {
   // The worker then gets the token Chrome cached. Started before any await,
   // while the click still counts as a user gesture.
   const googleSignIn = name === 'google' ? chromeGoogleAuth().getToken(true) : null;
-  setCard(name, {
-    busy: 'connect',
-    forceable: false,
-    message: name === 'apple' ? 'Checking the password…' : 'Finish signing in in the window that opened.',
-    kind: '',
-  });
+  const waiting = {
+    google: 'Waiting for Google sign-in (a window opens if Google needs you)…',
+    outlook: 'Finish signing in in the window that opened.',
+    apple: 'Checking the password…',
+  };
+  setCard(name, { busy: 'connect', signingIn: true, forceable: false, message: waiting[name], kind: '' });
   if (googleSignIn) {
     try {
       await googleSignIn;
     } catch (e) {
-      setCard(name, { busy: null, message: e?.message || "Couldn't sign in to Google.", kind: 'error' });
+      setCard(name, { busy: null, signingIn: false, message: e?.message || "Couldn't sign in to Google.", kind: 'error' });
       return;
     }
   }
+  // The answer comes after the first update of the calendar, which can take a
+  // while; onCalendarsChanged changes the message once the connection is saved.
   const result = await send({ type: 'calendar-connect', provider: name, credentials });
   if (result.status === 'connected') {
     if (name === 'apple') appleFields.appPassword.value = '';
-    setCard(name, { busy: null, message: 'Connected. Upcoming reviews are in the “ReLeet” calendar.', kind: 'ok' });
+    // That first update can fail (offline, say) without undoing the connection.
+    const failed = (await getCalendars())[name]?.lastError;
+    setCard(name, {
+      busy: null,
+      signingIn: false,
+      message: failed
+        ? 'Connected, but adding your reviews failed (see above).'
+        : 'Connected. Upcoming reviews are in the “ReLeet” calendar.',
+      kind: failed ? 'error' : 'ok',
+    });
   } else {
-    setCard(name, { busy: null, message: result.error ?? "Couldn't connect.", kind: 'error' });
+    setCard(name, { busy: null, signingIn: false, message: result.error ?? "Couldn't connect.", kind: 'error' });
   }
 }
 
@@ -348,7 +427,7 @@ async function disconnect(provider, force = false) {
     !force &&
     !confirm(
       `Disconnect ${title}?\n\nThis deletes the “ReLeet” calendar and all of its review events from ` +
-        `${account || 'that account'}. Your other calendars aren't touched.`,
+        `${account || provider.accountFallback || 'that account'}. Your other calendars aren't touched.`,
     )
   ) {
     return;
@@ -439,6 +518,20 @@ $('schedule-form').addEventListener('submit', async (event) => {
   setStatus(status, anyCalendar ? 'Saved. Upcoming blocks will move to match.' : 'Saved.', 'ok');
 });
 
+// ---- Notifications -------------------------------------------------------------
+
+$('test-notification').addEventListener('click', async () => {
+  const status = $('notification-status');
+  const result = await send({ type: 'test-notification' });
+  if (result.status !== 'ok') return setStatus(status, `Failed: ${result.error}`, 'error');
+  const what = result.problem ? `the reminder for “${result.problem}” (clicking it opens the problem)` : 'a test notification';
+  setStatus(
+    status,
+    `Sent ${what}. Nothing was changed. If nothing appeared, check that your system allows notifications from Chrome.`,
+    'ok',
+  );
+});
+
 // ---- Start ---------------------------------------------------------------------
 
 onSettingsChanged((next) => {
@@ -451,8 +544,19 @@ onLeetCodeStateChanged((next) => {
   renderLeetCode();
 });
 onCalendarsChanged((next) => {
+  const prev = calendars;
   calendars = next;
-  renderCalendars();
+  let changed = false;
+  for (const { name } of PROVIDERS) {
+    const state = next[name];
+    // Connect saved the connection: sign-in is over, the first update is running.
+    if (ui[name].signingIn && state?.connected && !state.needsReconnect) {
+      Object.assign(ui[name], { signingIn: false, message: 'Connected. Adding your upcoming reviews to the calendar…' });
+      changed = true;
+    }
+    if (JSON.stringify(visibleState(state)) !== JSON.stringify(visibleState(prev[name]))) changed = true;
+  }
+  if (changed) renderCalendars();
 });
 
 [settings, leetcode, calendars] = await Promise.all([getSettings(), getLeetCodeState(), getCalendars()]);

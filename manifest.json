@@ -3,7 +3,7 @@
   "name": "ReLeet",
   "version": "0.3.0",
   "description": "Spaced repetition for LeetCode: detects accepted solves, asks how hard they felt, and books review blocks in your calendar.",
-  "permissions": ["storage", "alarms", "notifications", "identity"],
+  "permissions": ["storage", "alarms", "notifications", "identity", "scripting"],
   "host_permissions": [
     "https://leetcode.com/*",
     "https://www.googleapis.com/*",

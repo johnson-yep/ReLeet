@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { APPLE_CALDAV_URL, createAppleProvider, parseMultistatus, verifyCredentials } from '../lib/calendars/apple.js';
+import { APPLE_CALDAV_URL, createAppleProvider, parseMultistatus } from '../lib/calendars/apple.js';
 import { CalendarError } from '../lib/calendars/errors.js';
 
 const APPLE_ID = 'alice@icloud.com';
@@ -206,7 +206,7 @@ test('parseMultistatus stays fast on broken input', () => {
 
 test('verifyCredentials follows principal → calendar home onto the partition host', async () => {
   const fetch = fakeFetch(DISCOVERY);
-  const result = await verifyCredentials({ appleId: APPLE_ID, appPassword: APP_PASSWORD, fetch });
+  const result = await createAppleProvider({ appleId: APPLE_ID, appPassword: APP_PASSWORD, fetch }).verifyCredentials();
 
   assert.deepEqual(result, { principalUrl: PRINCIPAL, homeUrl: HOME });
   assert.deepEqual(
@@ -573,8 +573,9 @@ test('network failures, 403 and 5xx are plain errors the sync retries', async ()
   const offline = provider(async () => {
     throw new TypeError('Failed to fetch');
   });
+  // The cause only: the popup and Settings say what happens next (a retry, or try again).
   await rejectsWith(offline.createEvent(CAL, SLOT), (e) => {
-    assert.match(e.message, /Couldn't reach iCloud Calendar/);
+    assert.equal(e.message, "Couldn't reach iCloud Calendar.");
     assert.equal(e.reconnect || e.calendarMissing || e.notFound, false);
   });
 
@@ -589,6 +590,7 @@ test('network failures, 403 and 5xx are plain errors the sync retries', async ()
       assert.equal(e.status, status);
       assert.equal(e.reconnect, false);
       assert.ok(e.message.length < 90, e.message);
+      assert.doesNotMatch(e.message, /try again|retry/i);
     });
   }
 });

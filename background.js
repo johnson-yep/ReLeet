@@ -9,10 +9,11 @@ import {
   onPendingChanged,
   onSettingsChanged,
 } from './lib/storage.js';
-import { isDue, nextDueAfter } from './lib/srs.js';
+import { isDue, nextDueAfter, compareDue } from './lib/srs.js';
 import { ratePending } from './lib/rating.js';
 import {
   SYNC_INTERVAL_MINUTES,
+  detectionsToNotify,
   syncLeetCode,
   syncIfStale,
   importRecent,
@@ -28,16 +29,44 @@ const CALENDAR_ALARM = 'calendar-sync'; // retries failed calendar updates
 const CALENDAR_SYNC_MINUTES = 15;
 const REVIEW_NOTIFICATION_PREFIX = 'review:';
 const PENDING_NOTIFICATION = 'pending';
+const TEST_NOTIFICATION = 'test';
 
 // Every listener is registered synchronously at the top level, so Chrome can
 // wake this worker for any of them. Nothing that must survive a restart is
 // kept in memory: it all lives in chrome.storage and alarms.
 
+// chrome.storage.local holds calendar sign-ins (Outlook tokens, the iCloud
+// app-specific password), and by default content scripts can read and write
+// it too. Ours only sends messages, so keep storage to ReLeet's own pages and
+// this worker. Chrome remembers the setting; older versions without it skip it.
+try {
+  chrome.storage.local.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' })?.catch(() => {});
+} catch {}
+
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
+  // Not for a Chrome update: the tabs' scripts are still running then.
+  if (reason === 'install' || reason === 'update') addToOpenLeetCodeTabs();
   if (reason === 'update') await dropGitHubSettings();
   await init();
 });
 chrome.runtime.onStartup.addListener(init);
+
+// Chrome adds manifest content scripts only to pages loaded after an install
+// or update. A leetcode.com tab that was already open (people keep it open all
+// day) has no script, or one from before the update that has stopped working:
+// no prompt, and at install not even the username for the background check.
+// So add the script to those tabs now (it skips a second copy in a tab).
+async function addToOpenLeetCodeTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://leetcode.com/*' });
+    for (const tab of tabs) {
+      // Discarded tabs and error pages refuse; they get it when they load.
+      chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/leetcode.js'] }).catch(() => {});
+    }
+  } catch {
+    // No tabs to reach. Detection starts on the next leetcode.com page load.
+  }
+}
 
 async function init() {
   await chrome.alarms.create(PERIODIC_ALARM, { periodInMinutes: 30 });
@@ -124,6 +153,7 @@ const EXTENSION_HANDLERS = {
   'calendar-connect': (m) => connectCalendar(m.provider, m.credentials),
   'calendar-disconnect': (m) => disconnectCalendar(m.provider, { force: Boolean(m.force) }),
   'calendar-sync-now': syncCalendars,
+  'test-notification': testNotification,
 };
 
 function fromExtensionPage(sender) {
@@ -157,10 +187,25 @@ onPendingChanged(() => updateBadge());
 async function runLeetCodeSync(sync) {
   try {
     const result = await sync();
-    if (result.added && result.detected?.length) notifyPending(result.detected);
+    if (result.added && result.detected?.length) {
+      // A check landing just before an open tab confirms the same solve.
+      const detected = detectionsToNotify(result.detected, await openProblemSlugs());
+      if (detected.length) notifyPending(detected);
+    }
     return result;
   } catch (e) {
     return { status: 'error', added: 0, detected: [], error: e?.message ?? String(e) };
+  }
+}
+
+// Problems open in leetcode.com tabs. The host permission is enough to see
+// those tabs' URLs (no "tabs" permission); other tabs come back without one.
+async function openProblemSlugs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://leetcode.com/problems/*' });
+    return new Set(tabs.map((t) => t.url?.match(/^https:\/\/leetcode\.com\/problems\/([a-z0-9-]+)/i)?.[1].toLowerCase()));
+  } catch {
+    return new Set();
   }
 }
 
@@ -190,19 +235,40 @@ async function checkDue() {
     for (const p of due) map[p.id] = { ...p, notifiedFor: p.dueAt };
     return due.length ? map : null; // a write triggers onProblemsChanged → reschedule
   });
-  for (const p of due) {
-    chrome.notifications.create(REVIEW_NOTIFICATION_PREFIX + p.id, {
-      type: 'basic',
-      iconUrl: 'icons/icon128.png',
-      title: 'Time to review',
-      message: p.title,
-      contextMessage: `Last rated ${p.rating}. Click to open the problem.`,
-      priority: 2,
-    });
-  }
+  for (const p of due) notifyReview(p);
 
   await scheduleNextDue(problems);
   updateBadge();
+}
+
+function notifyReview(problem) {
+  chrome.notifications.create(REVIEW_NOTIFICATION_PREFIX + problem.id, {
+    type: 'basic',
+    iconUrl: 'icons/icon128.png',
+    title: 'Time to review',
+    message: problem.title,
+    contextMessage: `Last rated ${problem.rating}. Click to open the problem.`,
+    priority: 2,
+  });
+}
+
+// Settings → "Send a test notification": what a due review looks like (for
+// the problem due soonest), without touching its due date or calendar block.
+async function testNotification() {
+  const [next] = Object.values(await getProblemMap()).sort(compareDue);
+  if (next) {
+    notifyReview(next);
+  } else {
+    chrome.notifications.create(TEST_NOTIFICATION, {
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: 'Time to review',
+      message: 'Notifications from ReLeet work.',
+      contextMessage: 'Reviews you track will look like this when they are due.',
+      priority: 2,
+    });
+  }
+  return { status: 'ok', problem: next?.title ?? null };
 }
 
 async function scheduleNextDue(problems) {
@@ -222,11 +288,25 @@ async function updateBadge() {
 chrome.notifications.onClicked.addListener(async (notificationId) => {
   chrome.notifications.clear(notificationId);
   if (notificationId === PENDING_NOTIFICATION) {
-    // openPopup needs Chrome 127+ and a focused window; the badge is the fallback.
-    chrome.action.openPopup?.().catch(() => {});
+    await openPendingList();
     return;
   }
   if (!notificationId.startsWith(REVIEW_NOTIFICATION_PREFIX)) return;
   const problem = await getProblem(notificationId.slice(REVIEW_NOTIFICATION_PREFIX.length));
   if (problem?.url) chrome.tabs.create({ url: problem.url });
 });
+
+// The toolbar popup only opens in a focused Chrome window, and clicking a
+// system notification usually comes from another app, which doesn't focus
+// one. So focus the last window first. If the popup still can't open (Chrome
+// before 127, no window, focus refused), show the same page in a tab, so the
+// click always leads to the list.
+async function openPendingList() {
+  try {
+    const win = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
+    await chrome.windows.update(win.id, { focused: true });
+    await chrome.action.openPopup({ windowId: win.id });
+  } catch {
+    await chrome.tabs.create({ url: chrome.runtime.getURL('popup/popup.html?tab') }).catch(() => {});
+  }
+}

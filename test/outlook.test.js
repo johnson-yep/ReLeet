@@ -33,7 +33,9 @@ const isCalendarError =
     assert.equal(err.reconnect, flags.reconnect ?? false, `reconnect flag (${err.message})`);
     assert.equal(err.calendarMissing, flags.calendarMissing ?? false);
     assert.equal(err.notFound, flags.notFound ?? false);
-    if (flags.message) assert.match(err.message, flags.message);
+    // A string must match exactly; a RegExp anywhere.
+    if (typeof flags.message === 'string') assert.equal(err.message, flags.message);
+    else if (flags.message) assert.match(err.message, flags.message);
     return true;
   };
 
@@ -234,14 +236,36 @@ test('signIn reads a fragment response too', async () => {
   assert.equal(h.tokenRequests[0].code, 'frag-code');
 });
 
-test('signIn: closing the window → reconnect error', async () => {
+// Also what Chrome reports when Microsoft showed its own error page (no or a
+// wrong redirect URI) and the user closed it, so it points to Troubleshooting.
+test('signIn: closing the window → reconnect error that points to SETUP.md', async () => {
   const h = harness({
     redirect: () => {
       throw new Error('The user did not approve access.');
     },
     tokenReply: () => tokens(1),
   });
-  await assert.rejects(h.auth.signIn(true), isCalendarError({ reconnect: true, message: /did not approve/ }));
+  await assert.rejects(
+    h.auth.signIn(true),
+    isCalendarError({ reconnect: true, message: /closed before it finished.*Troubleshooting in SETUP\.md/ }),
+  );
+});
+
+test('signIn: an unreachable sign-in page asks to try again, a silent one does not', async () => {
+  const h = harness({
+    redirect: () => {
+      throw new Error('Authorization page could not be loaded.');
+    },
+    tokenReply: () => tokens(1),
+  });
+  await assert.rejects(
+    h.auth.signIn(true),
+    isCalendarError({ reconnect: false, message: "Couldn't reach Microsoft to sign in. Check your connection and try again." }),
+  );
+  await assert.rejects(
+    h.auth.signIn(false),
+    isCalendarError({ reconnect: false, message: "Couldn't reach Microsoft to sign in." }),
+  );
 });
 
 test('signIn: token endpoint error is shown', async () => {
@@ -405,7 +429,7 @@ test('silent re-auth that needs the user → reconnect', async () => {
   });
   await assert.rejects(
     h.auth.getAccessToken(),
-    isCalendarError({ reconnect: true, message: /Reconnect Outlook in Settings/ }),
+    isCalendarError({ reconnect: true, message: 'Outlook sign-in expired.' }),
   );
   assert.equal(h.tokenRequests.length, 1); // only the failed refresh
 });
@@ -462,6 +486,22 @@ test('silent sign-in page that cannot load (offline) is a plain error', async ()
     tokenReply: () => spaExpired(),
   });
   await assert.rejects(h.auth.getAccessToken(), isCalendarError({ reconnect: false }));
+});
+
+// Chrome's TIMED_OUT: the hidden page never finished loading. An expired
+// Microsoft session redirects back with an error instead (tests above).
+test('silent sign-in page that times out (slow network) is a plain error', async () => {
+  const h = harness({
+    stored: expired,
+    redirect: () => {
+      throw new Error('Authorization page load timed out.');
+    },
+    tokenReply: () => spaExpired(),
+  });
+  await assert.rejects(
+    h.auth.getAccessToken(),
+    isCalendarError({ reconnect: false, message: /didn't respond in time/ }),
+  );
 });
 
 test('getAccessToken with nothing stored → reconnect', async () => {
@@ -590,16 +630,65 @@ test('ensureCalendar(null) creates the ReLeet calendar', async () => {
   fetch.assertDone();
 });
 
-test('ensureCalendar(id) keeps an existing calendar', async () => {
+const CAL_BY_ID = `${GRAPH_API}/me/calendars/${encodeURIComponent(CAL)}?$select=id`;
+const CAL_LIST = `${GRAPH_API}/me/calendars?$select=id,name&$top=100`;
+const listPage = (value, next = null) => json({ value, ...(next ? { '@odata.nextLink': next } : {}) });
+
+test('ensureCalendar(id) keeps an existing calendar that is in the user’s list', async () => {
   const { p, fetch } = provider([
-    {
-      method: 'GET',
-      url: `${GRAPH_API}/me/calendars/${encodeURIComponent(CAL)}?$select=id`,
-      respond: json({ id: CAL }),
-    },
+    { method: 'GET', url: CAL_BY_ID, respond: json({ id: CAL }) },
+    { method: 'GET', url: CAL_LIST, respond: listPage([{ id: 'A', name: 'Calendar' }], `${CAL_LIST}&$skip=100`) },
+    { method: 'GET', url: `${CAL_LIST}&$skip=100`, respond: listPage([{ id: CAL, name: 'ReLeet' }]) },
   ]);
   assert.equal(await p.ensureCalendar(CAL), CAL);
   fetch.assertDone();
+});
+
+// Classic Outlook moves a deleted calendar to Deleted Items: it still opens by
+// id, but it's gone from the user's list, so new blocks would be invisible.
+test('ensureCalendar(id) makes a new calendar when the old one opens but is no longer listed', async () => {
+  const { p, fetch } = provider([
+    { method: 'GET', url: CAL_BY_ID, respond: json({ id: CAL }) },
+    { method: 'GET', url: CAL_LIST, respond: listPage([{ id: 'A', name: 'Calendar' }]) },
+    { method: 'POST', url: `${GRAPH_API}/me/calendars`, json: { name: 'ReLeet' }, respond: json({ id: 'NEW' }, 201) },
+  ]);
+  assert.equal(await p.ensureCalendar(CAL), 'NEW');
+  fetch.assertDone();
+});
+
+test('ensureCalendar(id) keeps an unlisted calendar when the name is still taken by no listed calendar', async () => {
+  const { p, fetch } = provider([
+    { method: 'GET', url: CAL_BY_ID, respond: json({ id: CAL }) },
+    { method: 'GET', url: CAL_LIST, respond: listPage([{ id: 'A', name: 'Calendar' }]) },
+    {
+      method: 'POST',
+      url: `${GRAPH_API}/me/calendars`,
+      json: { name: 'ReLeet' },
+      respond: graphError(409, 'ErrorFolderExists'),
+    },
+    { method: 'GET', url: CAL_LIST, respond: listPage([{ id: 'A', name: 'Calendar' }]) },
+  ]);
+  assert.equal(await p.ensureCalendar(CAL), CAL);
+  fetch.assertDone();
+});
+
+test('ensureCalendar(id) keeps the calendar when the list fails or is cut off', async () => {
+  const failing = provider([
+    { method: 'GET', url: CAL_BY_ID, respond: json({ id: CAL }) },
+    { method: 'GET', url: CAL_LIST, respond: graphError(500, 'ErrorInternalServerError') },
+  ]);
+  assert.equal(await failing.p.ensureCalendar(CAL), CAL);
+  failing.fetch.assertDone();
+
+  // Ten full pages and more to come: CAL may be on a page that wasn't read.
+  const pages = Array.from({ length: 10 }, (_, i) => ({
+    method: 'GET',
+    url: i ? `${CAL_LIST}&$skip=${i * 100}` : CAL_LIST,
+    respond: listPage([{ id: `X${i}`, name: 'Other' }], `${CAL_LIST}&$skip=${(i + 1) * 100}`),
+  }));
+  const cutOff = provider([{ method: 'GET', url: CAL_BY_ID, respond: json({ id: CAL }) }, ...pages]);
+  assert.equal(await cutOff.p.ensureCalendar(CAL), CAL);
+  cutOff.fetch.assertDone();
 });
 
 test('ensureCalendar(id) recreates a deleted calendar', async () => {
@@ -816,7 +905,8 @@ test('a reconnect error from getAccessToken passes through', async () => {
   await assert.rejects(p.ensureCalendar(null), (err) => err === signedOut);
 });
 
-test('429 and 503 are plain errors (with Retry-After in the message)', async () => {
+// Nothing retries after Retry-After; the sync's 15-minute retry is said once by the UI.
+test('429 and 503 are plain errors, without a retry promise', async () => {
   const { p } = provider([
     {
       method: 'DELETE',
@@ -826,9 +916,12 @@ test('429 and 503 are plain errors (with Retry-After in the message)', async () 
     { method: 'DELETE', url: `${GRAPH_API}/me/events/EVT`, respond: graphError(503, 'ServiceUnavailable') },
     { method: 'DELETE', url: `${GRAPH_API}/me/events/EVT`, respond: graphError(500, 'InternalServerError') },
   ]);
-  await assert.rejects(p.deleteEvent(CAL, { id: 'EVT' }), isCalendarError({ message: /about 12 s/ }));
-  await assert.rejects(p.deleteEvent(CAL, { id: 'EVT' }), isCalendarError({ message: /limiting requests/ }));
-  await assert.rejects(p.deleteEvent(CAL, { id: 'EVT' }), isCalendarError({ message: /HTTP 500/ }));
+  await assert.rejects(p.deleteEvent(CAL, { id: 'EVT' }), isCalendarError({ message: 'Outlook is limiting requests.' }));
+  await assert.rejects(p.deleteEvent(CAL, { id: 'EVT' }), isCalendarError({ message: 'Outlook is limiting requests.' }));
+  await assert.rejects(
+    p.deleteEvent(CAL, { id: 'EVT' }),
+    isCalendarError({ message: 'Outlook is having trouble (HTTP 500).' }),
+  );
 });
 
 test('403 and accounts without a mailbox → reconnect', async () => {

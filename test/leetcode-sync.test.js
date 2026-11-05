@@ -4,8 +4,15 @@ import { installFakeChrome } from './helpers/fake-chrome.js';
 
 const chrome = installFakeChrome();
 const sync = await import('../lib/leetcode-sync.js');
-const { selectNewSubmissions, syncLeetCode, syncIfStale, importRecent, recordAcceptedFromPage, setDetectedUsername } =
-  sync;
+const {
+  selectNewSubmissions,
+  detectionsToNotify,
+  syncLeetCode,
+  syncIfStale,
+  importRecent,
+  recordAcceptedFromPage,
+  setDetectedUsername,
+} = sync;
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -118,6 +125,18 @@ test('selectNewSubmissions never dates a solve in the future', () => {
   assert.equal(submissions[0].submittedAt, now);
 });
 
+test('detectionsToNotify leaves a just-made solve to its open leetcode.com tab', () => {
+  const now = Date.now();
+  const d = (id, ago) => ({ id, title: id, submittedAt: now - ago });
+  const detected = [d('open-new', 30 * 1000), d('open-old', 10 * MIN), d('closed-new', 30 * 1000)];
+  const open = new Set(['open-new', 'open-old']);
+  assert.deepEqual(
+    detectionsToNotify(detected, open, now).map((s) => s.id),
+    ['open-old', 'closed-new'],
+  );
+  assert.equal(detectionsToNotify(detected, new Set(), now).length, 3);
+});
+
 // syncLeetCode
 
 test('sync without a username does nothing', async () => {
@@ -140,10 +159,36 @@ test('first sync records a baseline without queueing past solves', async () => {
   const { leetcode, pending } = chrome.dump();
   assert.equal(pending, undefined);
   assert.equal(leetcode.username, 'alice');
-  assert.ok(leetcode.baselineAt >= before && leetcode.baselineAt <= Date.now());
+  // Just past the newest listed solve, in LeetCode's time rather than ours.
+  assert.equal(leetcode.baselineAt, t + MIN + 1000);
   assert.deepEqual(leetcode.seenIds, ['1', '2']);
-  assert.equal(leetcode.lastSyncAt, leetcode.baselineAt);
+  assert.ok(leetcode.lastSyncAt >= before && leetcode.lastSyncAt <= Date.now());
   assert.equal(leetcode.lastError, null);
+});
+
+test('a first sync with nothing listed starts the baseline now', async () => {
+  chrome.reset({ settings: settings() });
+  serve([]);
+  const before = Date.now();
+  assert.equal((await syncLeetCode()).status, 'baseline');
+  const { baselineAt } = chrome.dump().leetcode;
+  assert.ok(baselineAt >= before && baselineAt <= Date.now());
+});
+
+test("with this machine's clock fast, a solve right after the baseline is still queued", async () => {
+  // LeetCode's clock is 3 minutes behind ours: its "just now" is our now - 3 min.
+  const leetcodeNow = nowSec() - 3 * MIN;
+  chrome.reset({ settings: settings() });
+  serve([sub('1', 'two-sum', leetcodeNow - 10 * MIN)]);
+  assert.equal((await syncLeetCode()).status, 'baseline');
+
+  // Solved on another device a few seconds after connecting (LeetCode's time).
+  serve([sub('2', 'lru-cache', leetcodeNow + 5000), sub('1', 'two-sum', leetcodeNow - 10 * MIN)]);
+  const result = await syncLeetCode();
+  assert.deepEqual(
+    result.detected.map((d) => d.id),
+    ['lru-cache'],
+  );
 });
 
 test('changing the username starts a new baseline', async () => {
@@ -261,6 +306,48 @@ test('concurrent syncs share one run', async () => {
   assert.equal(requests, 2);
 });
 
+test('a username change during a check runs once more for the new user', async () => {
+  chrome.reset({
+    settings: settings({ leetcodeUsername: 'alice', leetcodeUsernameSource: 'auto' }),
+    leetcode: { username: 'alice', baselineAt: 1, seenIds: [], lastSyncAt: 1, lastError: null },
+  });
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const asked = [];
+  globalThis.fetch = async (_url, init) => {
+    const { username } = JSON.parse(init.body).variables;
+    asked.push(username);
+    if (asked.length === 1) await gate; // alice's check is slow
+    const body = { data: { matchedUser: { username }, recentAcSubmissionList: [] } };
+    return new Response(JSON.stringify(body));
+  };
+
+  const alice = syncLeetCode();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await setDetectedUsername('bob'); // signed in as bob on leetcode.com
+  const bob = syncLeetCode(); // what the settings listener does
+  const aliceAgain = syncLeetCode();
+  release();
+
+  assert.equal((await alice).status, 'ok');
+  assert.equal((await bob).status, 'baseline');
+  assert.equal(await aliceAgain, await bob, 'callers for the new user share its run');
+  assert.deepEqual(asked, ['alice', 'bob']);
+  assert.equal(chrome.dump().leetcode.username, 'bob');
+});
+
+test('syncIfStale checks when the last check was for another username', async () => {
+  // E.g. the first check for bob failed and left alice's state behind.
+  chrome.reset({
+    settings: settings({ leetcodeUsername: 'bob' }),
+    leetcode: { username: 'alice', baselineAt: 1, seenIds: [], lastSyncAt: Date.now() - 10 * 1000 },
+  });
+  serve([]);
+  assert.equal((await syncIfStale()).status, 'baseline');
+  assert.equal(requests, 1);
+  assert.equal(chrome.dump().leetcode.username, 'bob');
+});
+
 test('syncIfStale skips when the last check was under a minute ago', async () => {
   chrome.reset({
     settings: settings(),
@@ -307,6 +394,45 @@ test('importRecent queues recent problems that are not tracked yet', async () =>
   // Already imported ids are seen, so a sync doesn't queue them again.
   const result = await syncLeetCode();
   assert.deepEqual([result.status, result.added], ['ok', 0]);
+});
+
+test('importRecent also queues an unchecked review of a tracked problem', async () => {
+  // Solved two-sum (tracked) on another device 10 minutes ago; no check since.
+  const t0 = nowSec();
+  chrome.reset({
+    settings: settings(),
+    leetcode: { username: 'alice', baselineAt: t0 - 60 * HOUR, seenIds: ['9'], lastSyncAt: t0 - 14 * MIN },
+    problems: { 'two-sum': problem('two-sum', [t0 - 72 * HOUR]) },
+  });
+  serve([sub('10', 'two-sum', t0 - 10 * MIN, 'Two Sum'), sub('9', 'lru-cache', t0 - 50 * HOUR, 'LRU Cache')]);
+
+  assert.deepEqual(await importRecent(), { status: 'ok', added: 2 });
+  const { pending, leetcode } = chrome.dump();
+  assert.deepEqual(Object.keys(pending).sort(), ['lru-cache', 'two-sum']);
+  assert.equal(pending['two-sum'].submissionId, '10');
+  assert.deepEqual(leetcode.seenIds, ['9', '10']);
+
+  // A tracked problem's solve from before the baseline, or already rated, isn't queued.
+  chrome.reset({
+    settings: settings(),
+    leetcode: { username: 'alice', baselineAt: t0 - 5 * MIN, seenIds: [] },
+    problems: { 'two-sum': problem('two-sum', [t0 - 72 * HOUR]), 'rated-today': problem('rated-today', [t0]) },
+  });
+  serve([sub('12', 'rated-today', t0 - MIN), sub('11', 'two-sum', t0 - 10 * MIN)]);
+  assert.deepEqual(await importRecent(), { status: 'ok', added: 0 });
+});
+
+test('importRecent for a new username keeps ignoring its past reviews', async () => {
+  const t0 = nowSec();
+  chrome.reset({
+    settings: settings({ leetcodeUsername: 'alice' }),
+    leetcode: { username: 'old', baselineAt: 1, seenIds: [] },
+    problems: { 'two-sum': problem('two-sum', [t0 - 72 * HOUR]) },
+  });
+  serve([sub('10', 'two-sum', t0 - 10 * MIN), sub('9', 'lru-cache', t0 - HOUR)]);
+  assert.deepEqual(await importRecent(), { status: 'ok', added: 1 });
+  assert.deepEqual(Object.keys(chrome.dump().pending), ['lru-cache']);
+  assert.equal(chrome.dump().leetcode.baselineAt, t0 - 10 * MIN + 1000);
 });
 
 test('importRecent before any sync also sets the baseline', async () => {

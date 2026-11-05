@@ -9,17 +9,31 @@
 // ask for a rating in a small prompt on the page.
 
 (() => {
+  // This file can run twice in one tab: from the manifest, and from the worker,
+  // which adds it to leetcode.com tabs already open when ReLeet is installed or
+  // updated. Two copies would show two prompts per solve. A copy from before an
+  // update ran in an older isolated world and can't see this flag, so it
+  // doesn't stop the new copy (the old one has stopped working anyway).
+  if (globalThis.__releetContentScript) return;
+  globalThis.__releetContentScript = true;
+
   // When to check after a hint (ms since the hint). Judging usually takes a few
   // seconds; backing off keeps a wrong answer or a slow judge to 8 requests.
   const POLL_AT_MS = [2, 4, 7, 11, 16, 25, 40, 60].map((s) => s * 1000);
-  // A submission this much older than the hint still counts (clock skew, slow judge).
+  // A submission this much older than the hint still counts (a slow judge, or
+  // a result that showed up long after Submit). Compared in LeetCode's time.
   const MATCH_WINDOW_MS = 120 * 1000;
   // An "Accepted" result shortly after we reported that problem is the same solve.
   const RESULT_REPEAT_MS = 60 * 1000;
   const REQUEST_TIMEOUT_MS = 15 * 1000;
   const CONFIRM_HIDE_MS = 5000;
-  // A key press this soon after the prompt grabs focus was meant for the editor.
-  const KEY_GUARD_MS = 600;
+
+  // The prompt never takes focus by itself: it can appear while you're still
+  // typing, and those keys would land on a rating button. This shortcut moves
+  // focus into it instead (Tab doesn't help in the editor, it indents).
+  const IS_MAC = /mac/i.test(navigator.userAgentData?.platform || navigator.platform || '');
+  const SHORTCUT_TEXT = IS_MAC ? 'Option+Shift+R' : 'Alt+Shift+R';
+  const SHORTCUT_LABEL = IS_MAC ? '⌥⇧R' : 'Alt+Shift+R';
 
   const SUBMIT_BUTTON = '[data-e2e-locator="console-submit-button"]';
   const SUBMISSION_RESULT = '[data-e2e-locator="submission-result"]';
@@ -60,6 +74,11 @@
 
   // LeetCode GraphQL (same origin, so the session cookie goes along)
 
+  // LeetCode's clock minus ours, from the Date header of its latest answer.
+  // Submission timestamps are LeetCode's time: compared with ours directly, a
+  // clock a few minutes fast would never match a new solve.
+  let serverOffset = 0;
+
   function readCookie(name) {
     for (const part of document.cookie.split(';')) {
       const [key, ...rest] = part.trim().split('=');
@@ -87,6 +106,8 @@
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`LeetCode HTTP ${res.status}`);
+    const serverNow = Date.parse(res.headers.get('date') ?? '');
+    if (Number.isFinite(serverNow)) serverOffset = serverNow - Date.now();
     const json = await res.json();
     return json?.data ?? null;
   }
@@ -185,12 +206,11 @@
     if (!user || !extensionAlive()) return { stop: true }; // signed out, or nobody to tell
     const data = await graphql(RECENT_AC_QUERY, { username: user, limit: 10 });
     const list = Array.isArray(data?.recentAcSubmissionList) ? data.recentAcSubmissionList : [];
+    // `since` is our clock; move it to LeetCode's before comparing.
+    const from = since + serverOffset - MATCH_WINDOW_MS;
     // Newest first, so the first match is the latest accepted submission.
     const hit = list.find(
-      (s) =>
-        s?.titleSlug === slug &&
-        Number(s.timestamp) * 1000 >= since - MATCH_WINDOW_MS &&
-        !reported.has(String(s.id)),
+      (s) => s?.titleSlug === slug && Number(s.timestamp) * 1000 >= from && !reported.has(String(s.id)),
     );
     if (!hit) return { retry: true };
     return {
@@ -229,15 +249,26 @@
   );
 
   // Ctrl/Cmd+Enter submits in LeetCode's editor (Shift is a different shortcut).
+  // Alt+Shift+R moves focus to the rating prompt while one is open.
   document.addEventListener(
     'keydown',
     (event) => {
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.repeat) {
         onSubmitHint('key');
+      } else if (isPromptShortcut(event) && focusPrompt()) {
+        // Ours alone: the editor shouldn't also act on it (on a Mac it would type "‰").
+        event.preventDefault();
+        event.stopPropagation();
       }
     },
     true,
   );
+
+  // event.code for macOS, where Option changes event.key to another character.
+  function isPromptShortcut(event) {
+    if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return false;
+    return event.code === 'KeyR' || event.key?.toLowerCase() === 'r';
+  }
 
   // The result panel catches submits the two hints above miss (a renamed button,
   // another shortcut). Checks are batched: the editor mutates the DOM on every key.
@@ -287,7 +318,7 @@
       --hard: #e5484d;
       /* Darker label shades: the brand colors are too light for small text on white. */
       --easy-text: #177a42;
-      --medium-text: #a06800;
+      --medium-text: #945f00;
       --hard-text: #c5282e;
       box-sizing: border-box;
       width: 304px;
@@ -313,12 +344,27 @@
     * { box-sizing: border-box; }
     p { margin: 0; }
     .brand {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
       font-size: 10.5px;
       font-weight: 600;
       letter-spacing: 0.06em;
       text-transform: uppercase;
       color: var(--muted);
       margin-bottom: 4px;
+    }
+    .shortcut { font-weight: 500; letter-spacing: 0; text-transform: none; }
+    .card.done .shortcut { visibility: hidden; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
     .title { font-weight: 600; overflow-wrap: anywhere; }
     .accepted { color: var(--easy-text); }
@@ -379,9 +425,9 @@
       --border: #34363b;
       --focus: #7096ff;
       --shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
-      --easy-text: var(--easy);
+      --easy-text: #25a95c;
       --medium-text: var(--medium);
-      --hard-text: #f2555a;
+      --hard-text: #f5676b;
     }`;
     return viaMedia ? `@media (prefers-color-scheme: dark) { ${rule} }` : rule;
   }
@@ -435,19 +481,23 @@
           class: `rate ${rating}`,
           'data-rating': rating,
           'aria-label': `${label}, review again in ${days} day${days === 1 ? '' : 's'}`,
-          onclick: (event) => rate(current, rating, label, event),
+          onclick: () => rate(current, rating, label),
         },
         h('span', {}, label),
         h('span', { class: 'days' }, ` · ${days}d`),
       ),
     );
+    buttons[0].setAttribute('aria-keyshortcuts', 'Alt+Shift+R');
     const later = h('button', { type: 'button', class: 'later', onclick: () => hidePrompt() }, 'Later');
+    // Screen readers hear about the prompt here, since focus stays where it was.
+    const announce = h('p', { class: 'sr-only', role: 'status' });
 
+    // A region, not a dialog: it doesn't take focus or block the page.
     const card = h(
       'div',
       {
         class: 'card',
-        role: 'dialog',
+        role: 'region',
         'aria-labelledby': 'releet-title',
         'aria-describedby': 'releet-question',
         onkeydown: (event) => {
@@ -455,13 +505,24 @@
           event.stopPropagation(); // don't also close LeetCode's own panels
           hidePrompt(); // Escape = Later
         },
+        // Focus only gets here by the user's doing (shortcut, Tab or a click).
+        // Remember where it came from, to hand it back when the prompt is done.
+        onfocusin: (event) => {
+          if (!card.contains(event.relatedTarget)) current.returnFocus = event.relatedTarget;
+        },
       },
-      h('p', { class: 'brand' }, 'ReLeet'),
+      h(
+        'p',
+        { class: 'brand' },
+        h('span', {}, 'ReLeet'),
+        h('span', { class: 'shortcut', 'aria-hidden': 'true' }, `${SHORTCUT_LABEL} to rate`),
+      ),
       h('p', { class: 'title', id: 'releet-title' }, h('span', { class: 'accepted' }, '✓ Accepted'), ` — ${title}`),
       question,
       h('div', { class: 'ratings', role: 'group', 'aria-label': 'Rate this solve' }, ...buttons),
       h('div', { class: 'footer' }, ...(tracked ? [h('span', { class: 'note' }, 'Counts as a review')] : []), later),
       status,
+      announce,
     );
 
     const style = document.createElement('style');
@@ -475,22 +536,34 @@
       card,
       question,
       status,
+      announce,
       buttons,
       pendingId,
       done: false,
       busy: false,
       hideTimer: null,
-      shownAt: Date.now(),
-      returnFocus: document.activeElement,
+      returnFocus: null,
     };
     prompt = current;
-    buttons[0].focus({ preventScroll: true });
+    // Filled in a moment after insertion: a live region that arrives with its
+    // text already in it often isn't read out.
+    setTimeout(() => {
+      if (prompt === current && !current.done) {
+        announce.textContent = `ReLeet: Accepted, ${title}. Press ${SHORTCUT_TEXT} to rate how hard it felt.`;
+      }
+    }, 250);
   }
 
-  async function rate(current, rating, label, event) {
+  // → true if there was a prompt to move focus to.
+  function focusPrompt() {
+    const current = prompt;
+    if (!current || current.done) return false;
+    current.buttons[0].focus({ preventScroll: true });
+    return true;
+  }
+
+  async function rate(current, rating, label) {
     if (current !== prompt || current.busy || current.done) return;
-    // Enter/Space right as the prompt appears was typed for the editor, not us.
-    if (event.detail === 0 && Date.now() - current.shownAt < KEY_GUARD_MS) return;
     current.busy = true;
     // aria-disabled rather than disabled: a disabled button drops focus, and
     // focus should go back to the editor when the prompt finishes.
@@ -510,6 +583,7 @@
     current.card.classList.add('done');
     current.question.textContent = message;
     current.status.textContent = detail;
+    current.announce.textContent = ''; // "press … to rate" is out of date now
     // The focused button is now hidden; hand focus back so typing keeps working.
     if (hadFocus) restoreFocus(current);
     current.hideTimer = setTimeout(() => hidePrompt(), CONFIRM_HIDE_MS);
