@@ -7,6 +7,12 @@
   --easy: #1f9d55;
   --medium: #d08700;
   --hard: #e5484d;
+  /* Text in the rating colors. The tones above are too light for small text
+     (WCAG AA needs 4.5:1) on white and on cards; they stay for borders and
+     tints. Same values as the in-page prompt (content/leetcode.js). */
+  --easy-text: #177a42;
+  --medium-text: #945f00;
+  --hard-text: #c5282e;
   --accent: #3b6ef5;
 }
 
@@ -17,6 +23,9 @@
     --muted: #9a9ea6;
     --border: #2e3035;
     --card: #222326;
+    --easy-text: #25a95c;
+    --medium-text: var(--medium);
+    --hard-text: #f5676b;
     --accent: #7096ff;
   }
 }
@@ -50,7 +59,7 @@ h2 {
 
 .muted { color: var(--muted); font-size: 12px; }
 .empty { color: var(--muted); margin: 4px 0; font-style: italic; }
-.error { color: var(--hard); margin: 6px 0 0; }
+.error { color: var(--hard-text); margin: 6px 0 0; }
 
 .problem-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 
@@ -90,9 +99,9 @@ button {
 }
 button:hover { border-color: var(--muted); }
 
-.rating.easy { color: var(--easy); }
-.rating.medium { color: var(--medium); }
-.rating.hard { color: var(--hard); }
+.rating.easy { color: var(--easy-text); }
+.rating.medium { color: var(--medium-text); }
+.rating.hard { color: var(--hard-text); }
 .icon-btn { color: var(--muted); padding: 3px 6px; }
 
 input[type="text"], input[type="password"] {
@@ -123,6 +132,25 @@ footer {
   border-top: 1px solid var(--border);
 }
 footer .error { font-size: 12px; margin: 0; }
+.footer-status { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.footer-actions { flex-shrink: 0; white-space: nowrap; }
+
+.banner {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--medium);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--medium) 12%, var(--bg));
+  font-size: 12px;
+}
+.banner .link-btn { flex-shrink: 0; white-space: nowrap; }
+
+/* The popup opened in a tab (see background.js openPendingList). */
+body.in-tab { margin: 24px auto; }
 
 .rating-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
 .rating-row button { padding: 6px; font-weight: 600; }

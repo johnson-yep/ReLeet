@@ -11,6 +11,8 @@
     <span id="summary" class="muted"></span>
   </header>
 
+  <div id="calendar-warnings"></div>
+
   <section id="pending-section" hidden>
     <div class="section-head">
       <h2>Rate new submissions</h2>
@@ -45,9 +47,12 @@
   </section>
 
   <footer>
-    <span id="sync-status" class="muted"></span>
-    <span>
-      <button id="sync-now" type="button" class="link-btn" hidden>Sync now</button>
+    <div class="footer-status">
+      <span id="sync-status" class="muted"></span>
+      <span id="calendar-status" class="muted" hidden></span>
+    </div>
+    <span class="footer-actions">
+      <button id="sync-now" type="button" class="link-btn" hidden>Check now</button>
       <button id="open-settings" type="button" class="link-btn">Settings</button>
     </span>
   </footer>

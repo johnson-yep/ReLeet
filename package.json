@@ -1,0 +1,9 @@
+{
+  "name": "releet",
+  "private": true,
+  "type": "module",
+  "description": "Not needed to run the extension. Only used for `npm test` (node --test), with no dependencies.",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  }
+}

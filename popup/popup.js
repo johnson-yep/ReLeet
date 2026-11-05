@@ -1,35 +1,61 @@
 import {
   getProblems,
-  getProblem,
-  saveProblem,
+  updateProblemMap,
   deleteProblem,
   getPending,
-  getPendingMap,
   dismissPending,
-  resolvePending,
   getSettings,
-  getSyncState,
+  getLeetCodeState,
+  getSchedule,
+  getCalendars,
   onProblemsChanged,
   onPendingChanged,
-  onSyncStateChanged,
+  onSettingsChanged,
+  onLeetCodeStateChanged,
+  onScheduleChanged,
+  onCalendarsChanged,
 } from '../lib/storage.js';
-import { applySolve, recordReview, groupByDue, startOfDay, RATINGS } from '../lib/srs.js';
+import {
+  applySolve,
+  recordReview,
+  groupByDue,
+  startOfDay,
+  dayStartMs,
+  reviewDay,
+  RATINGS,
+} from '../lib/srs.js';
 import { parseProblemInput } from '../lib/problem.js';
-import { createReviewInvite } from '../lib/calendar.js';
+import { createReviewInvite, slotForProblem } from '../lib/calendar.js';
+import { ratePending } from '../lib/rating.js';
 
 const $ = (id) => document.getElementById(id);
+// Opened in a tab (a notification click when Chrome couldn't show the popup).
+if (new URLSearchParams(location.search).has('tab')) document.body.classList.add('in-tab');
 const template = $('problem-template');
 const DAY_MS = 24 * 60 * 60 * 1000;
+const CALENDAR_NAMES = { google: 'Google', outlook: 'Outlook', apple: 'Apple' };
+const CALENDAR_FULL_NAMES = { google: 'Google Calendar', outlook: 'Outlook', apple: 'iCloud Calendar' };
 
 let problems = [];
 let pending = [];
+let settings = null;
+let leetcode = {};
+let schedule = { layoutKey: null, entries: {} };
+let calendars = {};
 
 function label(rating) {
   return rating[0].toUpperCase() + rating.slice(1);
 }
 
-function relativeDay(dueAt) {
-  const days = Math.round((startOfDay(dueAt) - startOfDay(Date.now())) / DAY_MS);
+function daysFromToday(ms) {
+  return Math.round((startOfDay(ms) - startOfDay(Date.now())) / DAY_MS);
+}
+
+// Local midnight of the problem's review day, for dates shown in the list.
+const reviewDate = (problem) => dayStartMs(reviewDay(problem));
+
+function relativeDay(problem) {
+  const days = daysFromToday(reviewDate(problem));
   if (days < -1) return `${-days} days overdue`;
   if (days === -1) return 'overdue since yesterday';
   if (days === 0) return 'today';
@@ -41,6 +67,10 @@ function formatDate(ms) {
   return new Date(ms).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+function formatTime(ms) {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
 function timeAgo(ms) {
   const minutes = Math.round((Date.now() - ms) / 60000);
   if (minutes < 1) return 'just now';
@@ -49,18 +79,21 @@ function timeAgo(ms) {
   return hours < 24 ? `${hours} h ago` : formatDate(ms);
 }
 
-function button(text, className, onClick, title) {
+// `action` names what the button does, so focus can find it again after a re-render.
+function button(text, className, onClick, title, action = null) {
   const b = document.createElement('button');
   b.type = 'button';
   b.textContent = text;
   b.className = className;
   if (title) b.title = title;
+  if (action) b.dataset.action = action;
   b.addEventListener('click', onClick);
   return b;
 }
 
-function problemItem({ title, url }, meta, actions) {
+function problemItem({ id, title, url }, meta, actions) {
   const li = template.content.firstElementChild.cloneNode(true);
+  li.dataset.id = id;
   const link = li.querySelector('.problem-title');
   link.textContent = title;
   link.href = url;
@@ -71,50 +104,65 @@ function problemItem({ title, url }, meta, actions) {
 
 function ratingButtons(onRate, verb) {
   return RATINGS.map((rating) =>
-    button(label(rating)[0], `rating ${rating}`, () => onRate(rating), `${verb} — felt ${rating}`),
+    button(label(rating)[0], `rating ${rating}`, () => onRate(rating), `${verb} — felt ${rating}`, rating),
   );
+}
+
+const connectedCalendars = () => Object.keys(CALENDAR_NAMES).filter((name) => calendars[name]?.connected);
+
+// The planned block, if it's still ahead (or today). An overdue review's block
+// is history, so its time isn't shown.
+function plannedBlock(problem) {
+  const slot = schedule.entries?.[problem.id];
+  return slot && daysFromToday(slot.start) >= 0 ? slot : null;
 }
 
 function renderPendingItem(s) {
   const tracked = problems.some((p) => p.id === s.id);
   const meta = [
     s.submittedAt ? `submitted ${formatDate(s.submittedAt)}` : 'imported',
-    s.topic,
+    s.topic, // only on rows left over from v0.2's NeetCode / GitHub sync
     tracked ? 'counts as a review' : null,
   ].filter(Boolean).join(' · ');
   return problemItem(s, meta, [
     ...ratingButtons((rating) => ratePending(s.id, rating), 'Rate'),
-    button('✕', 'icon-btn', () => dismissPending([s.id]), 'Dismiss without tracking'),
+    button('✕', 'icon-btn', () => dismissPending([s.id]), 'Dismiss without tracking', 'dismiss'),
   ]);
 }
 
 function renderProblem(problem, isDueToday) {
   const reviews = (problem.history?.length ?? 1) - 1;
+  const block = plannedBlock(problem);
   const meta =
-    `${label(problem.rating)} · solved ${formatDate(problem.solvedAt)} · due ${relativeDay(problem.dueAt)}` +
+    `${label(problem.rating)} · solved ${formatDate(problem.solvedAt)} · due ${relativeDay(problem)}` +
+    (block ? ` · ${formatTime(block.start)}` : '') +
     (reviews ? ` · ${reviews} review${reviews > 1 ? 's' : ''}` : '');
 
   // Rating a due problem counts as completing the review and reschedules it.
-  const actions = isDueToday
-    ? ratingButtons((rating) => review(problem.id, rating), 'Reviewed')
-    : [button('⏰', 'icon-btn', () => makeDueNow(problem.id), 'Make due now (for testing notifications)')];
-  actions.push(
-    button(
-      '📅',
-      'icon-btn',
-      () => downloadCalendarInvite(problem),
-      `Add review on ${formatDate(problem.dueAt)} to a calendar`,
-    ),
-  );
-  actions.push(button('✕', 'icon-btn', () => remove(problem), 'Delete'));
+  const actions = isDueToday ? ratingButtons((rating) => review(problem.id, rating), 'Reviewed') : [];
+  // A connected calendar already gets the block; the download is for everyone else.
+  if (!connectedCalendars().length) {
+    actions.push(
+      button(
+        '📅',
+        'icon-btn',
+        () => downloadCalendarInvite(problem),
+        `Add review on ${formatDate(reviewDate(problem))} to a calendar`,
+        'download',
+      ),
+    );
+  }
+  actions.push(button('✕', 'icon-btn', () => remove(problem), 'Delete', 'delete'));
 
   const li = problemItem(problem, meta, actions);
-  li.title = `Review date: ${formatDate(problem.dueAt)}`;
+  li.title = `Review date: ${formatDate(reviewDate(problem))}` + (block ? ` at ${formatTime(block.start)}` : '');
   return li;
 }
 
 function downloadCalendarInvite(problem) {
-  const { contents, filename } = createReviewInvite(problem);
+  const slot = schedule.entries?.[problem.id] ?? slotForProblem(problem, settings);
+  if (!slot) return;
+  const { contents, filename } = createReviewInvite(slot);
   const url = URL.createObjectURL(new Blob([contents], { type: 'text/calendar;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
@@ -130,7 +178,22 @@ function renderList(listEl, emptyEl, items, renderItem) {
   if (emptyEl) emptyEl.hidden = items.length > 0;
 }
 
+// The lists are rebuilt on every change, which drops keyboard focus. Remember
+// the focused button by list, problem and action, and focus its replacement.
+function focusedRowButton() {
+  const el = document.activeElement;
+  const li = el?.closest?.('li[data-id]');
+  return li && el.dataset.action ? { list: li.parentElement.id, id: li.dataset.id, action: el.dataset.action } : null;
+}
+
+function refocus(key) {
+  if (!key || document.activeElement !== document.body) return;
+  const row = [...$(key.list).children].find((li) => li.dataset.id === key.id);
+  row?.querySelector(`button[data-action="${key.action}"]`)?.focus();
+}
+
 function render() {
+  const focused = focusedRowButton();
   const { dueToday, upcoming } = groupByDue(problems);
   const newestFirst = [...pending].sort((a, b) => (b.submittedAt ?? 0) - (a.submittedAt ?? 0));
   $('pending-section').hidden = pending.length === 0;
@@ -139,39 +202,71 @@ function render() {
   renderList($('due-list'), $('due-empty'), dueToday, (p) => renderProblem(p, true));
   renderList($('upcoming-list'), $('upcoming-empty'), upcoming, (p) => renderProblem(p, false));
   $('summary').textContent = `${dueToday.length} due · ${problems.length} tracked`;
+  refocus(focused);
 }
 
-async function renderSyncStatus() {
-  const [settings, state] = await Promise.all([getSettings(), getSyncState()]);
+function setStatus(el, text, className = 'muted') {
+  el.textContent = text;
+  el.className = className;
+}
+
+function renderLeetCodeStatus() {
+  const username = String(settings?.leetcodeUsername ?? '').trim();
   const status = $('sync-status');
-  $('sync-now').hidden = !settings.owner;
-  if (!settings.owner) {
-    status.textContent = 'GitHub not connected';
-    status.className = 'muted';
-  } else if (state.lastError) {
-    status.textContent = `Sync error: ${state.lastError}`;
-    status.className = 'error';
+  $('sync-now').hidden = !username;
+  if (!username) {
+    setStatus(status, 'LeetCode not connected: open leetcode.com while signed in');
+  } else if (leetcode.lastError) {
+    // LeetCode's own messages already say "LeetCode".
+    const error = String(leetcode.lastError);
+    setStatus(status, /leetcode/i.test(error) ? error : `LeetCode: ${error}`, 'error');
   } else {
-    status.textContent = `${settings.repo} · synced ${state.lastSyncAt ? timeAgo(state.lastSyncAt) : 'never'}`;
-    status.className = 'muted';
+    const checked = leetcode.username === username && leetcode.lastSyncAt ? timeAgo(leetcode.lastSyncAt) : 'never';
+    setStatus(status, `@${username} · checked ${checked}`);
   }
 }
 
-async function ratePending(id, rating) {
-  const s = (await getPendingMap())[id];
-  if (!s) return;
-  const solve = { ...s, at: s.submittedAt ?? Date.now(), source: 'github' };
-  await resolvePending(id, applySolve(await getProblem(id), solve, rating));
+function openSettings() {
+  chrome.runtime.openOptionsPage();
 }
 
-async function review(id, rating) {
-  const problem = await getProblem(id);
-  if (problem) await saveProblem(recordReview(problem, rating));
+const sentence = (text) => (/[.!?]$/.test(text) ? text : `${text}.`);
+
+function calendarWarning(name, state) {
+  const p = document.createElement('p');
+  p.className = 'banner';
+  const text = document.createElement('span');
+  const calendar = CALENDAR_FULL_NAMES[name];
+  // A sign-in problem needs the user; anything else (offline, server trouble)
+  // retries on its own. Error messages give the cause only; the next step is added here.
+  if (state.needsReconnect) {
+    text.textContent = state.lastError
+      ? `${calendar}: ${sentence(String(state.lastError))}`
+      : `${calendar} needs you to sign in again.`;
+  } else {
+    text.textContent = `Couldn't update ${calendar}: ${sentence(String(state.lastError))} Retrying every 15 minutes.`;
+  }
+  p.append(text, button(state.needsReconnect ? 'Reconnect' : 'Settings', 'link-btn', openSettings));
+  return p;
 }
 
-async function makeDueNow(id) {
-  const problem = await getProblem(id);
-  if (problem) await saveProblem({ ...problem, dueAt: Date.now() });
+function renderCalendarStatus() {
+  const names = connectedCalendars();
+  const status = $('calendar-status');
+  status.hidden = names.length === 0;
+  status.textContent = `Calendar: ${names.map((name) => CALENDAR_NAMES[name]).join(', ')}`;
+  const failing = names.filter((name) => calendars[name].needsReconnect || calendars[name].lastError);
+  $('calendar-warnings').replaceChildren(...failing.map((name) => calendarWarning(name, calendars[name])));
+}
+
+// Read and write under one lock, so a rating saved from the leetcode.com
+// prompt at the same moment isn't overwritten.
+function review(id, rating) {
+  return updateProblemMap((map) => {
+    if (!map[id]) return null;
+    map[id] = recordReview(map[id], rating);
+    return map;
+  });
 }
 
 async function remove(problem) {
@@ -191,7 +286,10 @@ $('add-form').addEventListener('submit', async (event) => {
   error.hidden = true;
 
   // Re-adding a tracked problem counts as another review rather than a reset.
-  await saveProblem(applySolve(await getProblem(parsed.id), parsed, rating));
+  await updateProblemMap((map) => {
+    map[parsed.id] = applySolve(map[parsed.id] ?? null, parsed, rating);
+    return map;
+  });
   $('problem-input').value = '';
 });
 
@@ -204,19 +302,42 @@ $('dismiss-all').addEventListener('click', () => {
 $('sync-now').addEventListener('click', async () => {
   const btn = $('sync-now');
   btn.disabled = true;
-  btn.textContent = 'Syncing…';
-  await chrome.runtime.sendMessage({ type: 'sync-now' });
-  btn.disabled = false;
-  btn.textContent = 'Sync now';
+  btn.textContent = 'Checking…';
+  try {
+    await chrome.runtime.sendMessage({ type: 'sync-now' }); // the result arrives via storage listeners
+  } catch {
+    // The worker failed to answer; the status line still shows the last check.
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Check now';
+  }
 });
 
-$('open-settings').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('open-settings').addEventListener('click', openSettings);
 
 onProblemsChanged((list) => { problems = list; render(); });
 onPendingChanged((list) => { pending = list; render(); });
-onSyncStateChanged(renderSyncStatus);
+onScheduleChanged((next) => { schedule = next; render(); });
+onSettingsChanged((next) => { settings = next; renderLeetCodeStatus(); });
+onLeetCodeStateChanged((next) => { leetcode = next; renderLeetCodeStatus(); });
+// A sync saves the calendars key after every event it writes. The lists only
+// care which calendars are connected (for 📅), so most saves skip them.
+onCalendarsChanged((next) => {
+  const before = connectedCalendars().join();
+  calendars = next;
+  renderCalendarStatus();
+  if (connectedCalendars().join() !== before) render();
+});
 
-[problems, pending] = await Promise.all([getProblems(), getPending()]);
+[problems, pending, settings, leetcode, schedule, calendars] = await Promise.all([
+  getProblems(),
+  getPending(),
+  getSettings(),
+  getLeetCodeState(),
+  getSchedule(),
+  getCalendars(),
+]);
 render();
-renderSyncStatus();
-chrome.runtime.sendMessage({ type: 'sync-if-stale' }); // results arrive via storage listeners
+renderLeetCodeStatus();
+renderCalendarStatus();
+chrome.runtime.sendMessage({ type: 'sync-if-stale' }).catch(() => {}); // results arrive via storage listeners
