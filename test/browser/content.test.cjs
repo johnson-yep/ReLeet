@@ -5,6 +5,7 @@
 //   npm run test:browser                              (runs this and smoke.cjs)
 //   node --test test/browser/content.test.cjs         just this file
 //   SHOTS=1 node --test test/browser/content.test.cjs also writes prompt-*.png to test/browser/out/
+//   CHANNEL=chrome node --test test/browser/content.test.cjs   runs in the installed Google Chrome
 
 const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -20,7 +21,7 @@ const PROBLEM_URL = 'https://leetcode.com/problems/two-sum/description/';
 
 let browser;
 before(async () => {
-  browser = await chromium.launch();
+  browser = await chromium.launch(process.env.CHANNEL ? { channel: process.env.CHANNEL } : {});
 });
 after(async () => {
   await browser?.close();
