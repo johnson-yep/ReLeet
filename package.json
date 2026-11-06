@@ -2,8 +2,12 @@
   "name": "releet",
   "private": true,
   "type": "module",
-  "description": "Not needed to run the extension. Only used for `npm test` (node --test), with no dependencies.",
+  "description": "Not needed to run the extension. `npm test` runs the unit tests (no dependencies). `npm run test:browser` needs Playwright: `npm install` then `npx playwright install chromium`.",
   "scripts": {
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:browser": "node --test test/browser/content.test.cjs && node test/browser/smoke.cjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
   }
 }
