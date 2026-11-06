@@ -31,12 +31,16 @@ function chromeStub() {
   window.__messages = [];
   window.__responses = {
     'leetcode-user': { changed: true },
-    'leetcode-accepted': { status: 'queued', pendingId: 'two-sum', tracked: false },
+    'leetcode-accepted': { status: 'queued', pendingId: 'two-sum', tracked: false, intervals: { easy: 7, okay: 3, hard: 1 } },
     'rate-pending': {
       status: 'ok',
-      dueAt: new Date(2026, 10, 5).getTime(),
-      slot: { start: new Date(2026, 10, 5, 9, 0).getTime(), end: new Date(2026, 10, 5, 9, 40).getTime() },
+      day: '2026-11-05',
+      start: new Date(2026, 10, 5, 9, 0).getTime(),
+      capped: false,
+      undoToken: 'undo-rate',
     },
+    'master-pending': { status: 'ok', undoToken: 'undo-master' },
+    undo: { status: 'ok' },
   };
   window.chrome = window.chrome || {};
   window.chrome.runtime = {
@@ -128,7 +132,7 @@ async function open({ colorScheme = 'light', signedIn = true, responses = {}, se
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 describe('content/leetcode.js', { concurrency: true }, () => {
-  test('click → accepted → prompt → Medium → confirmation → auto-hide; no duplicate', async () => {
+  test('click → accepted → prompt → Okay → confirmation → auto-hide; no duplicate', async () => {
     const t = await open();
     try {
       // Username detection on load, with the CSRF header.
@@ -154,15 +158,16 @@ describe('content/leetcode.js', { concurrency: true }, () => {
       assert.equal(t.acPolls()[0].headers['x-csrftoken'], 'csrf-abc');
 
       await t.prompt.locator('.card').waitFor();
-      assert.match(await t.prompt.locator('.title').textContent(), /✓ Accepted — Two Sum/);
+      assert.equal(await t.prompt.locator('.title').textContent(), '✓ Accepted: Two Sum');
       assert.equal(await t.prompt.locator('.question').textContent(), 'How hard did it feel?');
-      assert.deepEqual(await t.prompt.locator('button.rate').allTextContents(), ['Easy · 7d', 'Medium · 3d', 'Hard · 1d']);
+      assert.deepEqual(await t.prompt.locator('button.rate').allTextContents(), ['Easy · 7d', 'Okay · 3d', 'Hard · 1d']);
+      assert.equal(await t.prompt.locator('button.mastered').textContent(), 'Mastered — stop reviewing');
       assert.equal(await t.prompt.locator('.note').count(), 0); // not tracked
       // The prompt doesn't take focus; the shortcut to reach it is shown and announced.
       assert.equal(await t.promptFocus(), null);
       assert.equal(await t.page.evaluate(() => document.activeElement.dataset.e2eLocator), 'console-submit-button');
       assert.equal(await t.prompt.locator('.card').getAttribute('role'), 'region');
-      assert.equal(await t.prompt.locator('.shortcut').textContent(), 'Alt+Shift+R to rate');
+      assert.equal(await t.prompt.locator('.shortcut').textContent(), 'Alt+Shift+R');
       assert.equal(await t.prompt.locator('button.rate.easy').getAttribute('aria-keyshortcuts'), 'Alt+Shift+R');
       await t.waitFor(async () => (await t.prompt.locator('.sr-only').textContent()) !== '', 2000, 'announcement');
       assert.equal(
@@ -176,12 +181,15 @@ describe('content/leetcode.js', { concurrency: true }, () => {
         await t.prompt.screenshot({ path: path.join(OUT, 'prompt-light.png') });
       }
 
-      await t.prompt.locator('button.rate.medium').click();
+      await t.prompt.locator('button.rate.okay').click();
       await t.waitFor(async () => (await t.ofType('rate-pending')).length, 3000, 'rate-pending');
-      assert.deepEqual(await t.ofType('rate-pending'), [{ type: 'rate-pending', id: 'two-sum', rating: 'medium' }]);
-      await t.waitFor(async () => (await t.prompt.locator('.status').textContent()) !== '', 3000, 'confirmation');
-      assert.equal(await t.prompt.locator('.status').textContent(), 'Next review Thu, Nov 5 · 9:00 AM');
-      assert.equal(await t.prompt.locator('.question').textContent(), 'Saved as Medium.');
+      assert.deepEqual(await t.ofType('rate-pending'), [{ type: 'rate-pending', id: 'two-sum', rating: 'okay' }]);
+      await t.waitFor(async () => (await t.prompt.locator('.outcome').textContent()) !== '', 3000, 'confirmation');
+      assert.equal(await t.prompt.locator('.outcome').textContent(), 'Saved: Okay. Next review Thu, Nov 5 at 9:00 AM. Undo');
+      // Bold: what was saved, and the Undo.
+      assert.equal(await t.prompt.locator('.outcome strong').textContent(), 'Saved: Okay.');
+      assert.equal(await t.prompt.locator('.outcome button.action').textContent(), 'Undo');
+      assert.equal(await t.prompt.locator('.question').isVisible(), false);
       assert.equal(await t.prompt.locator('.sr-only').textContent(), '', 'stale "press … to rate" cleared');
       if (process.env.SHOTS) await t.prompt.screenshot({ path: path.join(OUT, 'prompt-confirm.png') });
 
@@ -192,8 +200,8 @@ describe('content/leetcode.js', { concurrency: true }, () => {
       assert.ok(t.acPolls().length > pollsBefore, 'polled again');
       assert.equal((await t.ofType('leetcode-accepted')).length, 1);
 
-      // Auto-hide about 5 s after the confirmation.
-      await t.waitFor(async () => (await t.prompt.count()) === 0, 2500, 'auto-hide');
+      // Auto-hide about 10 s after the confirmation.
+      await t.waitFor(async () => (await t.prompt.count()) === 0, 7500, 'auto-hide');
       assert.equal((await t.ofType('leetcode-user')).length, 1, 'username sent once');
       assert.deepEqual(t.errors, []);
     } finally {
@@ -217,9 +225,8 @@ describe('content/leetcode.js', { concurrency: true }, () => {
     }
   });
 
-  test('Ctrl+Enter path; calendar-less confirmation has no time', async () => {
-    // Dates built in the page so they use the page's time zone.
-    const t = await open({ setup: () => (window.__responses['rate-pending'] = { status: 'ok', dueAt: new Date(2026, 10, 5).getTime() }) });
+  test('Ctrl+Enter path; a confirmation without a block time has no time', async () => {
+    const t = await open({ responses: { 'rate-pending': { status: 'ok', day: '2026-11-05', start: null, capped: false, undoToken: 'u' } } });
     try {
       await t.page.focus('#editor');
       await t.page.keyboard.press('Shift+Control+Enter'); // not a submit
@@ -241,8 +248,8 @@ describe('content/leetcode.js', { concurrency: true }, () => {
       await t.page.keyboard.press('Enter');
       await t.waitFor(async () => (await t.ofType('rate-pending')).length, 3000, 'rate-pending');
       assert.equal((await t.ofType('rate-pending'))[0].rating, 'hard');
-      await t.waitFor(async () => (await t.prompt.locator('.status').textContent()) !== '', 3000, 'confirmation');
-      assert.equal(await t.prompt.locator('.status').textContent(), 'Next review Thu, Nov 5');
+      await t.waitFor(async () => (await t.prompt.locator('.outcome').textContent()) !== '', 3000, 'confirmation');
+      assert.equal(await t.prompt.locator('.outcome').textContent(), 'Saved: Hard. Next review Thu, Nov 5. Undo');
       // Focus went back to the editor.
       assert.equal(await t.page.evaluate(() => document.activeElement.id), 'editor');
       assert.deepEqual(t.errors, []);
@@ -288,7 +295,7 @@ describe('content/leetcode.js', { concurrency: true }, () => {
       await t.page.keyboard.press('Enter');
       await t.waitFor(async () => (await t.ofType('rate-pending')).length, 3000, 'rate-pending');
       assert.equal((await t.ofType('rate-pending'))[0].rating, 'easy');
-      await t.waitFor(async () => (await t.prompt.locator('.status').textContent()) !== '', 3000, 'confirmation');
+      await t.waitFor(async () => (await t.prompt.locator('.outcome').textContent()) !== '', 3000, 'confirmation');
       assert.equal(await t.page.evaluate(() => document.activeElement.id), 'editor', 'focus handed back');
       assert.deepEqual(t.errors, []);
     } finally {
@@ -368,14 +375,110 @@ describe('content/leetcode.js', { concurrency: true }, () => {
     }
   });
 
-  test("'already-rated' → no prompt", async () => {
-    const t = await open({ responses: { 'leetcode-accepted': { status: 'already-rated', pendingId: 'two-sum', tracked: true } } });
+  for (const status of ['already-rated', 'mastered', 'idle']) {
+    test(`'${status}' → no prompt`, async () => {
+      const t = await open({ responses: { 'leetcode-accepted': { status, pendingId: 'two-sum', tracked: true } } });
+      try {
+        await t.page.click('[data-e2e-locator="console-submit-button"]');
+        t.accept(4004);
+        await t.waitFor(async () => (await t.ofType('leetcode-accepted')).length, 6000, 'leetcode-accepted');
+        await sleep(500);
+        assert.equal(await t.prompt.count(), 0);
+      } finally {
+        await t.context.close();
+      }
+    });
+  }
+
+  test('Undo after a rating puts the question back; Alt+Shift+R reaches Undo from the editor', async () => {
+    const t = await open();
+    try {
+      await t.page.focus('#editor');
+      await t.page.keyboard.press('Control+Enter');
+      t.accept(9101);
+      await t.prompt.locator('.card').waitFor({ timeout: 6000 });
+      await t.page.keyboard.press('Alt+Shift+R');
+      await t.page.keyboard.press('Enter'); // Easy
+      await t.waitFor(async () => /Undo/.test(await t.prompt.locator('.outcome').textContent()), 3000, 'confirmation');
+      assert.equal(await t.page.evaluate(() => document.activeElement.id), 'editor');
+      // The shortcut now goes to Undo.
+      await t.page.keyboard.press('Alt+Shift+R');
+      assert.equal(await t.promptFocus(), 'action');
+      await t.page.keyboard.press('Enter');
+      await t.waitFor(async () => (await t.ofType('undo')).length, 3000, 'undo');
+      assert.deepEqual(await t.ofType('undo'), [{ type: 'undo', token: 'undo-rate' }]);
+      await t.waitFor(async () => await t.prompt.locator('.question').isVisible(), 3000, 'asking again');
+      assert.equal(await t.prompt.locator('.outcome').textContent(), '');
+      assert.equal(await t.promptFocus(), 'easy');
+      assert.equal(await t.prompt.locator('button.rate.easy').getAttribute('aria-disabled'), null);
+      // And it can be rated again.
+      await t.prompt.locator('button.rate.hard').click();
+      await t.waitFor(async () => (await t.ofType('rate-pending')).length === 2, 3000, 'second rating');
+      assert.deepEqual(t.errors, []);
+    } finally {
+      await t.context.close();
+    }
+  });
+
+  test('"Mastered — stop reviewing" marks it mastered, with Undo', async () => {
+    const t = await open();
     try {
       await t.page.click('[data-e2e-locator="console-submit-button"]');
-      t.accept(4004);
-      await t.waitFor(async () => (await t.ofType('leetcode-accepted')).length, 6000, 'leetcode-accepted');
-      await sleep(500);
-      assert.equal(await t.prompt.count(), 0);
+      t.accept(9202);
+      await t.prompt.locator('.card').waitFor({ timeout: 6000 });
+      await t.prompt.locator('button.mastered').click();
+      await t.waitFor(async () => (await t.ofType('master-pending')).length, 3000, 'master-pending');
+      assert.deepEqual(await t.ofType('master-pending'), [{ type: 'master-pending', id: 'two-sum' }]);
+      await t.waitFor(async () => (await t.prompt.locator('.outcome').textContent()) !== '', 3000, 'confirmation');
+      assert.equal(await t.prompt.locator('.outcome').textContent(), 'Mastered. No more reviews of Two Sum. Undo');
+      if (process.env.SHOTS) await t.prompt.screenshot({ path: path.join(OUT, 'prompt-mastered.png') });
+      await t.prompt.locator('.outcome button.action').click();
+      await t.waitFor(async () => (await t.ofType('undo')).length, 3000, 'undo');
+      assert.deepEqual(await t.ofType('undo'), [{ type: 'undo', token: 'undo-master' }]);
+    } finally {
+      await t.context.close();
+    }
+  });
+
+  test('a rating that reaches the longest interval offers Mastered', async () => {
+    const t = await open({
+      responses: { 'rate-pending': { status: 'ok', day: '2027-05-04', start: null, capped: true, undoToken: 'u1' } },
+    });
+    try {
+      await t.page.click('[data-e2e-locator="console-submit-button"]');
+      t.accept(9303);
+      await t.prompt.locator('.card').waitFor({ timeout: 6000 });
+      await t.prompt.locator('button.rate.easy').click();
+      await t.waitFor(async () => (await t.prompt.locator('.outcome').textContent()) !== '', 3000, 'confirmation');
+      assert.equal(
+        await t.prompt.locator('.outcome').textContent(),
+        "Saved: Easy. Next review Tue, May 4. That's the longest interval. Mark mastered · Undo",
+      );
+      if (process.env.SHOTS) await t.prompt.screenshot({ path: path.join(OUT, 'prompt-capped.png') });
+      await t.prompt.locator('.outcome button.action', { hasText: 'Mark mastered' }).click();
+      await t.waitFor(async () => (await t.ofType('master-pending')).length, 3000, 'master-pending');
+      await t.waitFor(async () => /^Mastered\./.test(await t.prompt.locator('.outcome').textContent()), 3000, 'mastered');
+    } finally {
+      await t.context.close();
+    }
+  });
+
+  test('Alt+Shift+R shows a focus ring on the button it focuses', async () => {
+    const t = await open();
+    try {
+      await t.page.focus('#editor');
+      await t.page.keyboard.press('Control+Enter');
+      t.accept(9404);
+      await t.prompt.locator('.card').waitFor({ timeout: 6000 });
+      await t.page.keyboard.press('Alt+Shift+R');
+      const outline = await t.prompt.locator('button.rate.easy').evaluate((el) => getComputedStyle(el).outlineStyle);
+      assert.equal(outline, 'solid');
+      if (process.env.SHOTS) await t.prompt.screenshot({ path: path.join(OUT, 'prompt-focus.png') });
+      // A mouse click doesn't leave the keyboard ring on.
+      await t.prompt.locator('button.later').hover();
+      await t.page.mouse.down();
+      assert.equal(await t.prompt.locator('.card').getAttribute('class'), 'card');
+      await t.page.mouse.up();
     } finally {
       await t.context.close();
     }
@@ -384,13 +487,16 @@ describe('content/leetcode.js', { concurrency: true }, () => {
   test('tracked shows "Counts as a review"; Escape closes without rating', async () => {
     const t = await open({
       colorScheme: 'dark',
-      responses: { 'leetcode-accepted': { status: 'queued', pendingId: 'two-sum', tracked: true } },
+      responses: { 'leetcode-accepted': { status: 'queued', pendingId: 'two-sum', tracked: true, intervals: { easy: 18, okay: 11, hard: 1 } } },
     });
     try {
       await t.page.click('[data-e2e-locator="console-submit-button"]');
       t.accept(5005);
       await t.prompt.locator('.card').waitFor({ timeout: 6000 });
-      assert.equal(await t.prompt.locator('.note').textContent(), 'Counts as a review');
+      assert.equal(await t.prompt.locator('.note').textContent(), 'Counts as a review.');
+      // Each button shows this problem's own next interval.
+      assert.deepEqual(await t.prompt.locator('button.rate').allTextContents(), ['Easy · 18d', 'Okay · 11d', 'Hard · 1d']);
+      assert.equal(await t.prompt.locator('button.rate.easy').getAttribute('aria-label'), 'Easy, review again in 18 days');
       if (process.env.SHOTS) {
         await sleep(300);
         await t.page.screenshot({ path: path.join(OUT, 'prompt-dark-page.png') });
