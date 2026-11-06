@@ -3,7 +3,6 @@ import {
   getProblem,
   getPending,
   getSettings,
-  saveSettings,
   updateProblemMap,
   onProblemsChanged,
   onPendingChanged,
@@ -21,6 +20,7 @@ import {
   setDetectedUsername,
 } from './lib/leetcode-sync.js';
 import { syncCalendars, connectCalendar, disconnectCalendar, refreshSchedule } from './lib/calendar-sync.js';
+import { migrateStoredData } from './lib/migrate.js';
 
 const PERIODIC_ALARM = 'due-check';   // safety net in case a one-shot alarm is missed
 const NEXT_DUE_ALARM = 'next-due';    // fires exactly when the next problem becomes due
@@ -35,8 +35,8 @@ const TEST_NOTIFICATION = 'test';
 // wake this worker for any of them. Nothing that must survive a restart is
 // kept in memory: it all lives in chrome.storage and alarms.
 
-// chrome.storage.local holds calendar sign-ins (Outlook tokens, the iCloud
-// app-specific password), and by default content scripts can read and write
+// chrome.storage.local holds calendar sign-ins (the iCloud app-specific
+// password), and by default content scripts can read and write
 // it too. Ours only sends messages, so keep storage to ReLeet's own pages and
 // this worker. Chrome remembers the setting; older versions without it skip it.
 try {
@@ -46,7 +46,7 @@ try {
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   // Not for a Chrome update: the tabs' scripts are still running then.
   if (reason === 'install' || reason === 'update') addToOpenLeetCodeTabs();
-  if (reason === 'update') await dropGitHubSettings();
+  if (reason === 'update') await migrateStoredData();
   await init();
 });
 chrome.runtime.onStartup.addListener(init);
@@ -74,17 +74,6 @@ async function init() {
   await scheduleLeetCodeSync(await getSettings());
   await checkDue();
   syncCalendars();
-}
-
-// v0.2 synced from a GitHub repo, optionally with a token. That's gone, so
-// don't keep the token, its sync state or its alarms around.
-async function dropGitHubSettings() {
-  const { owner, repo, branch, token, ...settings } = await getSettings();
-  if ([owner, repo, branch, token].some((v) => v !== undefined)) await saveSettings(settings);
-  await chrome.storage.local.remove('sync');
-  const alarms = await chrome.alarms.getAll();
-  const stale = alarms.filter((a) => a.name === 'github-sync' || a.name.startsWith('after-submit:'));
-  await Promise.all(stale.map((a) => chrome.alarms.clear(a.name)));
 }
 
 // Re-creating an alarm restarts its countdown, so leave a matching one alone.

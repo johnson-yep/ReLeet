@@ -33,8 +33,8 @@ const $ = (id) => document.getElementById(id);
 if (new URLSearchParams(location.search).has('tab')) document.body.classList.add('in-tab');
 const template = $('problem-template');
 const DAY_MS = 24 * 60 * 60 * 1000;
-const CALENDAR_NAMES = { google: 'Google', outlook: 'Outlook', apple: 'Apple' };
-const CALENDAR_FULL_NAMES = { google: 'Google Calendar', outlook: 'Outlook', apple: 'iCloud Calendar' };
+const CALENDAR_NAMES = { google: 'Google', apple: 'Apple' };
+const CALENDAR_FULL_NAMES = { google: 'Google Calendar', apple: 'iCloud Calendar' };
 
 let problems = [];
 let pending = [];

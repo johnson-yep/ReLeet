@@ -8,8 +8,6 @@
     "https://leetcode.com/*",
     "https://www.googleapis.com/*",
     "https://oauth2.googleapis.com/*",
-    "https://login.microsoftonline.com/*",
-    "https://graph.microsoft.com/*",
     "https://*.icloud.com/*"
   ],
   "oauth2": {

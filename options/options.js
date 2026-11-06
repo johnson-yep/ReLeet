@@ -8,7 +8,6 @@ import {
   onCalendarsChanged,
 } from '../lib/storage.js';
 import { chromeGoogleAuth, isGoogleClientIdConfigured } from '../lib/calendars/google.js';
-import { isOutlookConfigured } from '../lib/calendars/outlook.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -176,12 +175,6 @@ const PROVIDERS = [
     // Named in the Disconnect warning when Google didn't say whose calendar it is.
     accountFallback: 'the Google account Chrome is signed in to',
     isConfigured: () => isGoogleClientIdConfigured(chrome.runtime.getManifest().oauth2?.client_id),
-  },
-  {
-    name: 'outlook',
-    title: 'Outlook / Microsoft 365',
-    about: 'Personal Microsoft accounts (Outlook.com, Hotmail) and work or school accounts.',
-    isConfigured: () => isOutlookConfigured(),
   },
   {
     name: 'apple',
@@ -388,7 +381,6 @@ async function connect(provider) {
   const googleSignIn = name === 'google' ? chromeGoogleAuth().getToken(true) : null;
   const waiting = {
     google: 'Waiting for Google sign-in (a window opens if Google needs you)…',
-    outlook: 'Finish signing in in the window that opened.',
     apple: 'Checking the password…',
   };
   setCard(name, { busy: 'connect', signingIn: true, forceable: false, message: waiting[name], kind: '' });

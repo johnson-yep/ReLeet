@@ -488,7 +488,7 @@ test("a started block that no connected calendar holds is placed again from now"
 test('a started block stays frozen when a calendar holds it, or when none is connected', () => {
   const p = problem('a', { due: day(0), rating: 'medium' });
   const prev = schedule([slot(p, time(0, 9), 40)]);
-  // Google has it; Outlook, connected later, must not move it.
+  // Google has it; Apple, connected later, must not move it.
   assert.deepEqual(planSchedule(prev, [p], SETTINGS, time(0, 15), { booked: new Set(['a']) }), prev);
   // No calendar at all: the advisory time doesn't creep forward on every sync.
   for (const now of [time(0, 9, 30), time(0, 15), time(0, 22)]) {
