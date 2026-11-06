@@ -180,7 +180,10 @@ for (const rating of RATINGS) {
 
 // ---- Calendars ---------------------------------------------------------------
 
-const calendarCards = mountCalendarCards($('calendar-cards'), { onRender: () => renderCalendarExtras() });
+const calendarCards = mountCalendarCards($('calendar-cards'), {
+  onRender: () => renderCalendarExtras(),
+  isIdle: () => role === 'idle',
+});
 
 function renderCalendarExtras() {
   $('calendar-sync-now').hidden = !calendarCards.anyConnected();
@@ -292,7 +295,11 @@ async function deleteAll(force) {
   const result = await send({ type: 'delete-all-data', force });
   if (result.status === 'deleted') {
     $('delete-anyway').hidden = true;
-    const left = result.leftBehind?.length ? ' The “ReLeet” calendar is still in your account: delete it there.' : '';
+    const left = !result.leftBehind?.length
+      ? ''
+      : role === 'idle'
+        ? ' Your “ReLeet” calendars stay for the computer ReLeet is active on.'
+        : ' The “ReLeet” calendar is still in your account: delete it there.';
     setStatus(status, `All ReLeet data in this browser is deleted.${left}`, 'ok');
     return;
   }
@@ -312,9 +319,13 @@ async function deleteAll(force) {
 
 $('delete-all').addEventListener('click', () => {
   // Kept as a dialog: this can't be undone.
+  const calendars =
+    role === 'idle'
+      ? 'ReLeet is active on another computer, so your “ReLeet” calendars stay. This deletes'
+      : 'This deletes the “ReLeet” calendars from your connected accounts, then';
   const ok = confirm(
-    'Delete all your ReLeet data?\n\nThis deletes the “ReLeet” calendars from your connected accounts, then every ' +
-      "problem, rating and setting in this browser. It can't be undone. Export first if you want a copy.",
+    `Delete all your ReLeet data?\n\n${calendars} every problem, rating and setting in this browser. ` +
+      "It can't be undone. Export first if you want a copy.",
   );
   if (ok) deleteAll(false);
 });

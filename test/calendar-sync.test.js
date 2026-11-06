@@ -966,3 +966,35 @@ test('without the iCloud permission, Apple asks to be reconnected instead of fai
     globalThis.fetch = realFetch;
   }
 });
+
+test('forgetting a calendar on a computer that is not the main one deletes nothing and revokes nothing', async () => {
+  const sync = makeSync();
+  await setProblems(problem('two-sum', 'easy', 1));
+  await sync.connectCalendar('apple', { appleId: 'me@icloud.com', appPassword: 'x' });
+  const before = stored('apple');
+  accounts.apple.calls = [];
+  assert.deepEqual(await sync.forgetCalendar('apple'), { status: 'disconnected', keptCalendar: true });
+  assert.deepEqual(accounts.apple.calls, []);
+  assert.deepEqual(counts.signOut, []);
+  assert.equal(accounts.apple.calendars.size, 1);
+  assert.deepEqual(stored('apple'), {
+    connected: false,
+    calendarId: before.calendarId,
+    events: before.events,
+    checkStrays: false,
+    account: 'me@apple.test',
+    auth: { appleId: 'me@icloud.com' },
+  });
+  assert.deepEqual(await sync.forgetCalendar('google'), { status: 'disconnected', keptCalendar: false });
+});
+
+test('adopting imported calendars leaves a connected one alone', async () => {
+  const sync = makeSync();
+  await sync.connectCalendar('google');
+  const google = stored('google');
+  const imported = { connected: false, calendarId: 'imported', events: {}, checkStrays: false, account: null };
+  await sync.adoptCalendars({ google: imported, apple: { ...imported, auth: { appleId: 'me@icloud.com' } }, yahoo: imported });
+  assert.deepEqual(stored('google'), google);
+  assert.equal(stored('apple').calendarId, 'imported');
+  assert.equal(stored('yahoo'), undefined);
+});

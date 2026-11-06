@@ -3,7 +3,7 @@
 // makes this computer the main one.
 
 import { getSettings, onSettingsChanged, updateSettings } from '../lib/storage.js';
-import { claimMainComputer } from '../lib/computer.js';
+import { claimIfUnclaimed, computerRole, onRoleChanged } from '../lib/computer.js';
 import { plural } from '../lib/format.js';
 import { mountCalendarCards, send, sentence } from '../options/calendar-cards.js';
 
@@ -75,10 +75,23 @@ $('daily-limit').addEventListener('input', async () => {
   showSaved('daily-limit');
 });
 
+// Finishing makes this the main computer, unless another one already is:
+// taking over needs the confirmation in Settings.
 $('done').addEventListener('click', async () => {
-  await claimMainComputer();
+  await claimIfUnclaimed();
   location.href = 'https://leetcode.com/problemset/';
 });
+
+$('open-settings').addEventListener('click', (event) => {
+  event.preventDefault();
+  chrome.runtime.openOptionsPage();
+});
+
+function renderRole(role) {
+  $('idle-notice').hidden = role !== 'idle';
+}
+onRoleChanged(renderRole);
+renderRole(await computerRole());
 
 onSettingsChanged((next) => {
   settings = next;

@@ -320,7 +320,7 @@ async function step(name, fn) {
     await options.setViewportSize({ width: 900, height: 1000 });
     await options.goto(`${base}/options/options.html`);
     await options.locator('#card-apple').waitFor();
-    assert.deepEqual(await options.locator('h2').allInnerTexts(), ['LeetCode', 'Schedule', 'Calendars', 'Notifications', 'This computer', 'Privacy and your data']);
+    assert.deepEqual(await options.locator('h2').allInnerTexts(), ['LeetCode', 'Schedule', 'Calendars', 'Notifications', 'This computer', 'Privacy & data']);
     assert.equal(await options.locator('#card-google').isHidden(), true);
     const apple = options.locator('#card-apple');
     assert.match(await apple.innerText(), /Connected as me@icloud\.com/);
@@ -503,6 +503,19 @@ async function step(name, fn) {
     await page.close();
   });
 
+  await step('on a computer that is not the main one, the welcome page says so and Done takes nothing over', async () => {
+    await sw.evaluate(() => chrome.storage.sync.set({ mainComputer: { id: 'another-computer', claimedAt: 1 } }));
+    const welcome = await ctx.newPage();
+    watchPage(welcome, 'welcome-idle');
+    await welcome.goto(`${base}/welcome/welcome.html`);
+    await welcome.locator('#idle-notice').waitFor();
+    assert.match(await welcome.locator('#idle-notice').innerText(), /already active on another computer/);
+    await welcome.click('#done');
+    await waitFor(() => welcome.url().startsWith('https://leetcode.com/problemset'), 5000, 'went to LeetCode');
+    assert.equal((await sw.evaluate(() => chrome.storage.sync.get('mainComputer'))).mainComputer.id, 'another-computer');
+    await welcome.close();
+  });
+
   await step('the welcome page shows the detected username, and Done makes this the main computer', async () => {
     await sw.evaluate(() => chrome.storage.sync.remove('mainComputer'));
     const welcome = await ctx.newPage();
@@ -510,6 +523,7 @@ async function step(name, fn) {
     await welcome.setViewportSize({ width: 900, height: 1300 });
     await welcome.goto(`${base}/welcome/welcome.html`);
     await waitFor(async () => (await welcome.locator('#leetcode-status').innerText()) === 'Signed in as @alice ✓', 5000, 'signed in');
+    assert.equal(await welcome.locator('#idle-notice').isHidden(), true);
     assert.equal(await welcome.locator('#import').isDisabled(), false);
     await welcome.screenshot({ path: SHOT('welcome-signed-in'), fullPage: true });
     await welcome.click('#done');

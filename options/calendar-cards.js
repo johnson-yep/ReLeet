@@ -65,7 +65,8 @@ const PROVIDERS = [
 ];
 
 // onRender() runs after every render, for what the page shows around the cards.
-export function mountCalendarCards(container, { onRender = () => {} } = {}) {
+// isIdle() says ReLeet is active on another computer, which uses the same calendars.
+export function mountCalendarCards(container, { onRender = () => {}, isIdle = () => false } = {}) {
   let calendars = {};
   // Per-card state that isn't in storage: what's in progress and the last
   // message. `attempt` tells a Connect the user cancelled from a later one.
@@ -279,22 +280,21 @@ export function mountCalendarCards(container, { onRender = () => {} } = {}) {
   async function disconnect(provider, force = false) {
     const { name, title } = provider;
     const account = calendars[name]?.account;
-    if (
-      !force &&
-      !confirm(
-        `Disconnect ${title}?\n\nThis deletes the “ReLeet” calendar and all of its review events from ` +
-          `${account || provider.accountFallback}. Your other calendars aren't touched.`,
-      )
-    ) {
-      return;
-    }
+    const question = isIdle()
+      ? `Disconnect ${title} on this computer?\n\nReLeet is active on another computer, which uses the same ` +
+        '“ReLeet” calendar, so the calendar stays in your account.'
+      : `Disconnect ${title}?\n\nThis deletes the “ReLeet” calendar and all of its review events from ` +
+        `${account || provider.accountFallback}. Your other calendars aren't touched.`;
+    if (!force && !confirm(question)) return;
     setCard(name, { busy: 'disconnect', message: '', kind: '' });
     const result = await send({ type: 'calendar-disconnect', provider: name, force });
     if (result.status === 'disconnected') {
       setCard(name, {
         busy: null,
         forceable: false,
-        message: force
+        message: result.keptCalendar
+          ? 'Disconnected on this computer. The “ReLeet” calendar stays for the computer ReLeet is active on.'
+          : force
           ? 'Disconnected. The “ReLeet” calendar is still in your account: delete it there, or connect again to pick it up.'
           : 'Disconnected.',
         kind: 'ok',

@@ -7,6 +7,7 @@ import {
   onPendingChanged,
   onProblemsChanged,
   onSettingsChanged,
+  withStorageLock,
 } from './lib/storage.js';
 import { RATINGS, dayKey } from './lib/srs.js';
 import { master, ratePending, undo } from './lib/actions.js';
@@ -22,9 +23,11 @@ import {
 } from './lib/leetcode-sync.js';
 import {
   PROVIDER_NAMES,
+  adoptCalendars,
   syncCalendars,
   connectCalendar,
   disconnectCalendar,
+  forgetCalendar,
   refreshSchedule,
 } from './lib/calendar-sync.js';
 import { migrateStoredData } from './lib/migrate.js';
@@ -59,7 +62,8 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   // Not for a Chrome update: the tabs' scripts are still running then.
   if (reason === 'install' || reason === 'update') addToOpenLeetCodeTabs();
   if (reason === 'install') chrome.tabs.create({ url: chrome.runtime.getURL('welcome/welcome.html') }).catch(() => {});
-  if (reason === 'update') await migrateStoredData();
+  // A failed migration must not keep ReLeet from starting; it runs again on the next update.
+  if (reason === 'update') await migrateStoredData().catch((e) => console.warn('ReLeet: migration failed', e));
   await init();
 });
 chrome.runtime.onStartup.addListener(init);
@@ -226,7 +230,8 @@ const EXTENSION_HANDLERS = {
   'sync-if-stale': () => runLeetCodeSync(syncIfStale),
   'import-recent': importRecent,
   'calendar-connect': (m) => connectCalendar(m.provider, m.credentials),
-  'calendar-disconnect': (m) => disconnectCalendar(m.provider, { force: Boolean(m.force) }),
+  'calendar-disconnect': async (m) =>
+    (await active()) ? disconnectCalendar(m.provider, { force: Boolean(m.force) }) : forgetCalendar(m.provider),
   'calendar-sync-now': syncCalendars,
   'test-notification': testNotification,
   'export-data': exportData,
@@ -424,37 +429,43 @@ async function importData(data) {
     if (e instanceof ImportError) return { status: 'error', error: e.message };
     throw e;
   }
-  const [problems, pending, leetcode, calendars] = await Promise.all([
-    getProblemMap(),
-    getPendingMap(),
-    getLeetCodeState(),
-    getCalendars(),
-  ]);
-  const merged = mergeImport({ problems, pending, leetcode, calendars }, imported);
-  await chrome.storage.local.set({
-    problems: merged.problems,
-    pending: merged.pending,
-    settings: merged.settings,
-    leetcode: merged.leetcode,
-    calendars: merged.calendars,
+  // Under the lock, so a rating made at the same moment isn't lost.
+  const merged = await withStorageLock(async () => {
+    const [problems, pending, leetcode, calendars] = await Promise.all([
+      getProblemMap(),
+      getPendingMap(),
+      getLeetCodeState(),
+      getCalendars(),
+    ]);
+    const result = mergeImport({ problems, pending, leetcode, calendars }, imported);
+    await chrome.storage.local.set({
+      problems: result.problems,
+      pending: result.pending,
+      settings: result.settings,
+      leetcode: result.leetcode,
+    });
+    return result;
   });
-  return {
-    status: 'ok',
-    problems: Object.keys(imported.problems).length,
-    added: merged.added,
-    calendars: Object.keys(imported.calendars).filter((name) => !calendars[name]?.connected),
-  };
+  const adopted = Object.keys(imported.calendars).filter((name) => !merged.calendars[name]?.connected);
+  await adoptCalendars(Object.fromEntries(adopted.map((name) => [name, merged.calendars[name]])));
+  return { status: 'ok', problems: Object.keys(imported.problems).length, added: merged.added, calendars: adopted };
 }
 
 // "Delete all my ReLeet data": the ReLeet calendars in connected accounts
 // first (that needs the sign-ins), then everything stored in this browser.
 // `force` goes ahead when a calendar couldn't be deleted, leaving it behind.
+// On a computer that isn't the main one, the calendars belong to the main
+// computer, so they stay.
 async function deleteAllData({ force = false } = {}) {
   const calendars = await getCalendars();
+  const connected = PROVIDER_NAMES.filter((n) => calendars[n]?.connected);
+  const main = await active();
   const failed = [];
-  for (const name of PROVIDER_NAMES.filter((n) => calendars[n]?.connected)) {
-    const result = await disconnectCalendar(name);
-    if (result.status !== 'disconnected') failed.push({ provider: name, error: result.error });
+  if (main) {
+    for (const name of connected) {
+      const result = await disconnectCalendar(name);
+      if (result.status !== 'disconnected') failed.push({ provider: name, error: result.error });
+    }
   }
   if (failed.length && !force) return { status: 'error', failed };
   await releaseMainComputer();
@@ -463,5 +474,5 @@ async function deleteAllData({ force = false } = {}) {
   await chrome.storage.session.clear();
   await forgetSecrets();
   await chrome.action.setBadgeText({ text: '' });
-  return { status: 'deleted', leftBehind: failed.map((f) => f.provider) };
+  return { status: 'deleted', leftBehind: main ? failed.map((f) => f.provider) : connected };
 }

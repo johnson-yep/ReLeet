@@ -447,3 +447,50 @@ test('delete all clears this browser and the main-computer claim', async () => {
   assert.equal(left.pending, undefined);
   assert.equal((await chrome.storage.sync.get('mainComputer')).mainComputer, undefined);
 });
+
+test('on a computer that is not the main one, Disconnect and Delete all leave the shared calendar alone', async () => {
+  const apple = {
+    connected: true,
+    calendarId: 'https://p01-caldav.icloud.com/1/calendars/shared/',
+    events: { a: { id: 'ev-a', day: '2026-11-10', start: 1, end: 2, hash: 'h' } },
+    account: 'me@icloud.com',
+    auth: { appleId: 'me@icloud.com', appPassword: { iv: 'x', data: 'y' } },
+  };
+  const realFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    requests.push(String(url));
+    throw new Error('no network in this test');
+  };
+  try {
+    const { chrome, send } = await startedWorker({ storage: { calendars: { apple } }, sync: otherComputer });
+    const res = await send({ type: 'calendar-disconnect', provider: 'apple' });
+    assert.deepEqual(res, { status: 'disconnected', keptCalendar: true });
+    const left = chrome.dump().calendars.apple;
+    assert.equal(left.connected, false);
+    assert.equal(left.calendarId, apple.calendarId);
+    assert.deepEqual(left.auth, { appleId: 'me@icloud.com' });
+
+    await chrome.storage.local.set({ calendars: { apple } });
+    assert.deepEqual(await send({ type: 'delete-all-data' }), { status: 'deleted', leftBehind: ['apple'] });
+    assert.deepEqual(requests, []);
+    // Another computer's claim is never removed.
+    assert.equal((await chrome.storage.sync.get('mainComputer')).mainComputer.id, 'some-other-computer');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('a failed update migration still starts ReLeet', async () => {
+  const { chrome, alarms } = await loadWorker({
+    api: { 'alarms.getAll': async () => Promise.reject(new Error('alarms unavailable')) },
+  });
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await chrome.runtime.onInstalled.fire({ reason: 'update' });
+  } finally {
+    console.warn = warn;
+  }
+  assert.ok(alarms.has('calendar-sync'));
+});
