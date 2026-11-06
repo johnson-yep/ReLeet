@@ -20,7 +20,7 @@ This guide takes you from the source folder to a listing in the Chrome Web Store
 
 ReLeet asks for one Google permission, `calendar.app.created`. With it, ReLeet can create its own "ReLeet" calendar and manage events on that calendar. It cannot see your other calendars.
 
-Google Calendar signs in with the Google account Chrome is signed in to (`chrome://settings/people`).
+Google Calendar signs in with the Google account Chrome is signed in to.
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com) and sign in. Open the project picker at the top, click **New project**, name it `ReLeet`, and select it.
 2. Enable the API. Open **APIs & Services**, then **Library**. Search for **Google Calendar API**, open it, and click **Enable**.
@@ -28,6 +28,8 @@ Google Calendar signs in with the Google account Chrome is signed in to (`chrome
    - App name: `ReLeet`. User support email: yours.
    - Audience (user type): **External**.
    - Contact email: yours. Accept the policy and create.
+   - Open **Audience** and click **Publish app**, so the status changes from **Testing** to **In production**.
+     While it says Testing, only the test users listed there can connect Google Calendar.
 4. Add the scope. Open **Data Access** (older consoles: the **Scopes** step) and click **Add or remove scopes**. Filter for `calendar.app.created`, tick `https://www.googleapis.com/auth/calendar.app.created`, click **Update**, then **Save**.
 5. Create the client. Open **Clients** (older consoles: **APIs & Services**, **Credentials**, **Create credentials**, **OAuth client ID**) and click **Create client**.
    - Application type: **Chrome Extension**.
@@ -55,10 +57,12 @@ Reload the extension on `chrome://extensions`. Its ID now matches the store's, a
 
 ## 5. Rebuild, upload, and fill in the listing
 
-1. Run `npm run package` again. The placeholder warning should be gone.
+1. Run `npm run package` again. The placeholder warning is gone now.
 2. In the dashboard, upload the new zip over the draft.
-3. Fill in the **Store listing** tab (description, screenshots, icon, category). Language is English.
+3. Fill in the **Store listing** tab: description, screenshots, icon and category. The language is English.
+   The screenshots from `npm run test:browser` (in `test/browser/out/`) are a starting point.
 4. Fill in the **Privacy** tab with the text below.
+5. Submit the item for review.
 
 ### Single purpose
 
@@ -70,7 +74,7 @@ Reload the extension on `chrome://extensions`. Its ID now matches the store's, a
 | --- | --- |
 | `storage` | Stores the user's review history, settings, and calendar connection state locally in the browser. |
 | `alarms` | Runs the periodic check for new accepted solves and the daily summary, and keeps the calendar in sync. |
-| `notifications` | Tells the user when a solve was detected and when a review is due. |
+| `notifications` | Sends one daily summary of the reviews due, and tells the user when a solve made on another device is waiting to be rated. |
 | `identity` | Signs the user in to Google Calendar through the Google account Chrome is signed in to (`chrome.identity.getAuthToken`). |
 | `scripting` | Adds the content script to leetcode.com tabs that were already open when the extension was installed or updated. It runs nowhere else. |
 | `https://leetcode.com/*` | Detects accepted solutions, reads the user's recent accepted submissions, and looks up problem titles. |
@@ -84,7 +88,7 @@ ReLeet has no remote code. All scripts ship in the package.
 
 Tick these categories on the privacy tab, and explain them as follows.
 
-- **Authentication information.** Google sign-in goes through Chrome, and ReLeet never sees the Google password. For Apple Calendar, the user enters an Apple ID email and an app-specific password. ReLeet stores both encrypted in the browser and sends them only to iCloud.
+- **Authentication information.** Google sign-in goes through Chrome, and ReLeet never sees the Google password. For Apple Calendar, the user enters an Apple ID email and an app-specific password. ReLeet stores them in the browser, the password encrypted, and sends them only to iCloud.
 - **Personal communications and web history.** Do not tick these. ReLeet reads nothing else from the pages the user visits.
 - **User activity and website content.** ReLeet reads the user's LeetCode username and which problems they solved, and the problem titles. It sends problem titles to Google Calendar or iCloud as calendar event text.
 
@@ -97,8 +101,6 @@ The store requires a privacy policy URL because ReLeet handles sign-in informati
 > Review history is stored locally in your browser and is never sent to the developer.
 
 It should also say that problem titles go to the user's own Google or Apple calendar, and that there is no analytics or telemetry.
-
-5. Submit the item for review.
 
 ## 6. Google verification
 
@@ -125,6 +127,6 @@ Mention these on the listing page or in the support notes.
 ## Troubleshooting
 
 - **Connect fails with "bad client id" or an OAuth error page.** The Item ID on the Google Cloud client does not match the ID of the extension you are running. Locally, add the `"key"` from step 4.
-- **Access blocked.** The Google account is not allowed to use the app. Until verification, every account other than the owner's must be a test user (**Audience**, **Test users**).
+- **Access blocked.** The app is still in **Testing** (see step 3), so only its test users can connect, or Google stopped new sign-ins at the 100-user cap (see step 6).
 - **No prompt on leetcode.com right after installing or reloading ReLeet.** A tab that Chrome put to sleep gets the content script only when it reloads. Reload the tab.
 - **Errors from the service worker.** On `chrome://extensions`, click **service worker** under ReLeet to open its console.
