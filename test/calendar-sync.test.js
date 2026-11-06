@@ -147,7 +147,8 @@ function makeSync({ isConfigured = () => true, updateCalendarState = storage.upd
 }
 
 beforeEach(() => {
-  chrome.reset();
+  // A whole day, so these sync tests aren't split by the daily limit (see schedule.test.js).
+  chrome.reset({ settings: { dailyLimit: 24 * 60 } });
   clock = at(0, 8);
   accounts = Object.fromEntries(PROVIDER_NAMES.map((name) => [name, fakeAccount(name)]));
   counts = { plan: 0, saveSchedule: 0, makeProvider: [], signOut: [] };
@@ -173,7 +174,7 @@ function assertInSync(name) {
 
 // Connect
 
-test('first connect creates an event for every upcoming review, none for overdue ones', async () => {
+test('first connect creates an event for every review, an overdue one booked again today', async () => {
   const sync = makeSync();
   await setProblems(
     problem('two-sum', 'easy', 1),
@@ -192,9 +193,10 @@ test('first connect creates an event for every upcoming review, none for overdue
   assert.equal(state.lastError, null);
   assert.equal(state.needsReconnect, false);
   assert.equal(state.lastSyncAt, clock);
-  assert.deepEqual(Object.keys(state.events).sort(), ['jump-game', 'lru-cache', 'two-sum']);
+  assert.deepEqual(Object.keys(state.events).sort(), ['jump-game', 'lru-cache', 'overdue', 'two-sum']);
+  assert.equal(state.events.overdue.start, at(0, 9));
   assert.equal(accounts.google.calendars.size, 1);
-  assert.equal(accounts.google.events().size, 3);
+  assert.equal(accounts.google.events().size, 4);
   assertInSync('google');
   // Same day → back to back.
   assert.equal(state.events['two-sum'].start, state.events['lru-cache'].end);

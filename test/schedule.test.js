@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dayKey, layoutKey, slotHash, planSchedule, diffEvents } from '../lib/schedule.js';
-import { createProblem, recordReview, startOfDay } from '../lib/srs.js';
+import { bookedProblems, dayKey, layoutKey, slotHash, planSchedule, diffEvents } from '../lib/schedule.js';
+import { createProblem, markMastered, recordReview, startOfDay } from '../lib/srs.js';
 
 // Every time below is local wall-clock time in whatever zone is active when the
 // test body runs, so the suite passes under any TZ. DST tests pin their zone.
@@ -16,6 +16,9 @@ const SETTINGS = Object.freeze({
   leetcodeUsernameSource: 'manual',
   startTime: '09:00',
   durations: Object.freeze({ easy: 20, okay: 40, hard: 60 }),
+  // A whole day, so the placement tests below aren't split by the limit; the
+  // daily limit has its own tests.
+  dailyLimit: 24 * 60,
   reminderMinutes: 15,
 });
 
@@ -58,8 +61,8 @@ function problem(id, { due, rating = 'okay', ratedAt = due - 3 * DAY, title = ti
 }
 
 // The slot planSchedule should produce for `p` at `start`.
-function slot(p, start, minutes, { reminderMinutes = 15, day: slotDay = dayKey(p.dueAt) } = {}) {
-  return {
+function slot(p, start, minutes, { reminderMinutes = 15, day: slotDay = dayKey(p.dueAt), overdueSince } = {}) {
+  const s = {
     problemId: p.id,
     day: slotDay,
     start,
@@ -69,7 +72,10 @@ function slot(p, start, minutes, { reminderMinutes = 15, day: slotDay = dayKey(p
     url: p.url,
     rating: p.rating,
     reminderMinutes,
+    dueDay: dayKey(p.dueAt),
   };
+  if (overdueSince) s.overdueSince = overdueSince;
+  return s;
 }
 
 const schedule = (entries, settings = SETTINGS) => ({
@@ -147,7 +153,7 @@ test('dayKey across the EU DST change (Europe/London, 2026-10-25)', () => {
 
 // layoutKey / slotHash
 
-test('layoutKey changes with the start time and each duration, and nothing else', () => {
+test('layoutKey changes with the start time, each duration and the daily limit, and nothing else', () => {
   const base = layoutKey(SETTINGS);
   assert.equal(layoutKey({ ...SETTINGS }), base);
   assert.equal(layoutKey(withSettings({ reminderMinutes: 5 })), base);
@@ -159,9 +165,11 @@ test('layoutKey changes with the start time and each duration, and nothing else'
   // Same layout written differently is the same layout.
   assert.equal(layoutKey(withSettings({ startTime: '9:00' })), base);
   assert.equal(layoutKey(withSettings({ durations: { easy: '20', okay: '40', hard: '60' } })), base);
+  assert.notEqual(layoutKey(withSettings({ dailyLimit: 90 })), base);
   // Missing settings fall back to the defaults.
-  assert.equal(layoutKey({}), base);
-  assert.equal(layoutKey(undefined), base);
+  const defaults = layoutKey(withSettings({ dailyLimit: 60 }));
+  assert.equal(layoutKey({}), defaults);
+  assert.equal(layoutKey(undefined), defaults);
 });
 
 test('slotHash covers exactly what is written to the calendar', () => {
@@ -430,20 +438,154 @@ test('today: gaps before now are never used', () => {
 
 // planSchedule: overdue and removed problems
 
-test('overdue problems without a block get none', () => {
-  const overdue = problem('overdue', { due: day(-1) });
-  assert.deepEqual(planSchedule(null, [overdue], SETTINGS, time(0, 8)).entries, {});
-  // A block on some other day doesn't count either.
-  const prev = schedule([slot(overdue, time(-3, 9), 40, { day: dayKey(day(-3)) })]);
-  assert.deepEqual(planSchedule(prev, [overdue], SETTINGS, time(0, 8)).entries, {});
+test('an overdue review is booked again today, first in line, and remembers the day it was due', () => {
+  const overdue = problem('overdue', { due: day(-3) });
+  const todays = problem('todays', { due: day(0), rating: 'easy', ratedAt: time(-9, 9) });
+  const plan = planSchedule(null, [todays, overdue], SETTINGS, time(0, 8));
+  assert.deepEqual(placements(plan), {
+    overdue: `${dayKey(day(0))} 09:00+40`,
+    todays: `${dayKey(day(0))} 09:40+20`,
+  });
+  assert.equal(plan.entries.overdue.day, dayKey(day(0)));
+  assert.equal(plan.entries.overdue.dueDay, dayKey(day(-3)));
+  assert.equal(plan.entries.overdue.overdueSince, dayKey(day(-3)));
+  assert.equal(plan.entries.todays.overdueSince, undefined);
 });
 
-test('an overdue problem keeps its started block, even after layout changes', () => {
-  const overdue = problem('overdue', { due: day(-1), rating: 'okay' });
-  const prev = schedule([slot(overdue, time(-1, 9), 40)]);
-  const reRated = { ...overdue, rating: 'hard' };
-  const plan = planSchedule(prev, [reRated], withSettings({ startTime: '06:00', durations: { hard: 90 } }), time(0, 8));
-  assert.deepEqual(plan.entries.overdue, slot(reRated, time(-1, 9), 40));
+test('a missed block stays on the calendar as history and the review gets a new block, first in line', () => {
+  const missed = problem('missed', { due: day(-1) });
+  const todays = problem('todays', { due: day(0), rating: 'easy' });
+  const prev = schedule([slot(missed, time(-1, 9), 40), slot(todays, time(0, 9), 20)]);
+  const plan = planSchedule(prev, [missed, todays], SETTINGS, time(0, 8));
+  assert.deepEqual(
+    plan.entries.missed,
+    slot(missed, time(0, 9, 20), 40, { day: dayKey(day(0)), overdueSince: dayKey(day(-1)) }),
+  );
+  assert.equal(plan.entries.todays.start, time(0, 9)); // keeps its time
+  const ref = { id: 'ev', day: dayKey(day(-1)), start: time(-1, 9), end: time(-1, 9, 40), hash: slotHash(prev.entries.missed) };
+  const ops = diffEvents(plan.entries, { missed: ref }, time(0, 8));
+  assert.deepEqual(ops.forget, ['missed']);
+  assert.deepEqual(ops.remove, []);
+  assert.deepEqual(ops.create.map((s) => s.problemId), ['missed', 'todays']);
+
+  // Missed again: still overdue since the first day it was missed.
+  const later = planSchedule(plan, [missed, todays], SETTINGS, time(1, 8));
+  assert.equal(later.entries.missed.day, dayKey(day(1)));
+  assert.equal(later.entries.missed.overdueSince, dayKey(day(-1)));
+});
+
+test('a review planned in the previous version keeps its block and day', () => {
+  const p = problem('p', { due: day(1) });
+  const { dueDay, ...v03 } = slot(p, time(1, 9), 40);
+  const prev = { layoutKey: layoutKey(SETTINGS), entries: { p: v03 } };
+  assert.deepEqual(planSchedule(prev, [p], SETTINGS, time(0, 8)).entries.p, { ...v03, dueDay });
+});
+
+// planSchedule: daily limit
+
+const limited = (minutes) => withSettings({ dailyLimit: minutes });
+
+test('reviews that do not fit in the daily limit move to the next day with room', () => {
+  const ratedAt = time(-5, 9);
+  const a = problem('a', { due: day(1), rating: 'okay', ratedAt }); // 40
+  const b = problem('b', { due: day(1), rating: 'easy', ratedAt: ratedAt + 1 }); // 20
+  const c = problem('c', { due: day(1), rating: 'okay', ratedAt: ratedAt + 2 }); // 40
+  const d = problem('d', { due: day(2), rating: 'easy', ratedAt }); // 20
+  const plan = planSchedule(null, [a, b, c, d], limited(60), time(0, 8));
+  assert.deepEqual(placements(plan), {
+    a: `${dayKey(day(1))} 09:00+40`,
+    b: `${dayKey(day(1))} 09:40+20`,
+    c: `${dayKey(day(2))} 09:00+40`, // the review day itself moves
+    d: `${dayKey(day(2))} 09:40+20`,
+  });
+  assert.equal(plan.entries.c.day, dayKey(day(2)));
+  assert.equal(plan.entries.c.dueDay, dayKey(day(1)));
+  assert.equal(plan.entries.c.overdueSince, undefined);
+  // On its new day (a and b were reviewed) it's simply due, not overdue.
+  const onTheDay = planSchedule(plan, [c, d], limited(60), time(2, 8));
+  assert.equal(onTheDay.entries.c.day, dayKey(day(2)));
+  assert.equal(onTheDay.entries.c.overdueSince, undefined);
+});
+
+test('a day always takes one review, even one longer than the limit', () => {
+  const big = problem('big', { due: day(1), rating: 'hard' });
+  const small = problem('small', { due: day(1), rating: 'easy' });
+  const plan = planSchedule(null, [big, small], limited(30), time(0, 8));
+  assert.deepEqual(placements(plan), { big: `${dayKey(day(1))} 09:00+60`, small: `${dayKey(day(2))} 09:00+20` });
+});
+
+test('a smaller review still fits where a larger one did not', () => {
+  const ratedAt = time(-5, 9);
+  const a = problem('a', { due: day(1), rating: 'okay', ratedAt }); // 40
+  const b = problem('b', { due: day(1), rating: 'okay', ratedAt: ratedAt + 1 }); // 40: no room
+  const c = problem('c', { due: day(1), rating: 'easy', ratedAt: ratedAt + 2 }); // 20: fits
+  const plan = planSchedule(null, [a, b, c], limited(60), time(0, 8));
+  assert.deepEqual(
+    Object.fromEntries(Object.values(plan.entries).map((s) => [s.problemId, s.day])),
+    { a: dayKey(day(1)), b: dayKey(day(2)), c: dayKey(day(1)) },
+  );
+});
+
+test('overdue reviews fill a day first, oldest first, then that day\'s own in the usual order', () => {
+  const ratedAt = time(-9, 9);
+  const older = problem('older', { due: day(-4), rating: 'easy', ratedAt: ratedAt + 5 });
+  const newer = problem('newer', { due: day(-1), rating: 'easy', ratedAt });
+  const own1 = problem('own1', { due: day(0), rating: 'easy', ratedAt });
+  const own2 = problem('own2', { due: day(0), rating: 'easy', ratedAt: ratedAt + 1 });
+  const plan = planSchedule(null, [own2, own1, newer, older], limited(60), time(0, 8));
+  assert.deepEqual(placements(plan), {
+    older: `${dayKey(day(0))} 09:00+20`,
+    newer: `${dayKey(day(0))} 09:20+20`,
+    own1: `${dayKey(day(0))} 09:40+20`,
+    own2: `${dayKey(day(1))} 09:00+20`,
+  });
+});
+
+test("today's started blocks count toward its limit, so a missed review goes to the next day with room", () => {
+  const ratedAt = time(-9, 9);
+  const a = problem('a', { due: day(0), rating: 'okay', ratedAt });
+  const b = problem('b', { due: day(0), rating: 'easy', ratedAt: ratedAt + 1 });
+  const missed = problem('missed', { due: day(-1), rating: 'easy' });
+  const prev = schedule([slot(a, time(0, 9), 40), slot(b, time(0, 9, 40), 20), slot(missed, time(-1, 9), 20)], limited(60));
+  // Chrome was closed until 11:00: today's blocks are over but they're still today's reviews.
+  const plan = planSchedule(prev, [a, b, missed], limited(60), time(0, 11));
+  assert.equal(plan.entries.a.start, time(0, 9));
+  assert.equal(plan.entries.b.start, time(0, 9, 40));
+  assert.equal(plan.entries.missed.day, dayKey(day(1)));
+  assert.equal(plan.entries.missed.start, time(1, 9));
+  assert.equal(plan.entries.missed.overdueSince, dayKey(day(-1)));
+});
+
+test('a new limit is a new layout: moved reviews come back when there is room', () => {
+  const ratedAt = time(-5, 9);
+  const a = problem('a', { due: day(1), rating: 'okay', ratedAt });
+  const b = problem('b', { due: day(1), rating: 'okay', ratedAt: ratedAt + 1 });
+  const tight = planSchedule(null, [a, b], limited(60), time(0, 8));
+  assert.equal(tight.entries.b.day, dayKey(day(2)));
+  const roomy = planSchedule(tight, [a, b], limited(90), time(0, 9));
+  assert.deepEqual(placements(roomy), { a: `${dayKey(day(1))} 09:00+40`, b: `${dayKey(day(1))} 09:40+40` });
+});
+
+test('mastered problems get no review day or block', () => {
+  const p = problem('p', { due: day(1) });
+  const mastered = markMastered(problem('m', { due: day(1) }), time(0, 7));
+  const prev = planSchedule(null, [p, problem('m', { due: day(1) })], SETTINGS, time(0, 7));
+  const plan = planSchedule(prev, [p, mastered], SETTINGS, time(0, 8));
+  assert.deepEqual(Object.keys(plan.entries), ['p']);
+  // Its upcoming block is deleted from the calendar.
+  const ref = { id: 'ev-m', day: prev.entries.m.day, start: prev.entries.m.start, end: prev.entries.m.end, hash: slotHash(prev.entries.m) };
+  assert.deepEqual(diffEvents(plan.entries, { m: ref }, time(0, 8)).remove, [{ problemId: 'm', ref }]);
+});
+
+test('bookedProblems lists reviews a connected calendar holds on their planned day', () => {
+  const plan = { entries: { a: { day: '2026-11-04' }, b: { day: '2026-11-05' } } };
+  assert.equal(bookedProblems(plan, {}), null);
+  assert.equal(bookedProblems(plan, { google: { connected: false, events: { a: { day: '2026-11-04' } } } }), null);
+  const booked = bookedProblems(plan, {
+    google: { connected: true, events: { a: { day: '2026-11-04' }, b: { day: '2026-11-04' } } },
+    apple: { connected: true, events: {} },
+  });
+  assert.deepEqual([...booked], ['a']);
 });
 
 test('a block that ran past midnight and has not started is re-placed after a layout change, not dropped', () => {
@@ -456,17 +598,22 @@ test('a block that ran past midnight and has not started is re-placed after a la
 
   const plan = planSchedule(prev, [p, q, r], settings, time(0, 0, 30));
   assert.deepEqual(placements(plan), {
-    p: `${dayKey(day(-1))} 23:00+60`, // started: frozen
+    p: `${dayKey(day(0))} 09:00+50`, // over at midnight without a review: missed, booked again today
     q: `${dayKey(day(0))} 00:00+60`, // started: frozen
     r: `${dayKey(day(0))} 01:00+50`, // not started: re-placed (after q), new length
   });
+  assert.equal(plan.entries.p.overdueSince, dayKey(day(-1)));
+  assert.equal(plan.entries.q.day, dayKey(day(-1)));
   assert.equal(plan.entries.r.day, dayKey(day(-1)));
+  assert.equal(plan.entries.r.overdueSince, undefined);
   // So the calendar moves the event instead of deleting it.
   const old = prev.entries.r;
   const ref = { id: 'ev-r', day: old.day, start: old.start, end: old.end, hash: slotHash(old) };
   assert.deepEqual(diffEvents(plan.entries, { r: ref }, time(0, 0, 30)).update, [{ slot: plan.entries.r, ref }]);
-  // Once it has started (or without a layout change) nothing moves.
-  assert.deepEqual(planSchedule(prev, [p, q, r], SETTINGS, time(0, 0, 30)), prev);
+  // Without a layout change, q and r don't move.
+  const same = planSchedule(prev, [p, q, r], SETTINGS, time(0, 0, 30));
+  assert.deepEqual(same.entries.q, prev.entries.q);
+  assert.deepEqual(same.entries.r, prev.entries.r);
 });
 
 test("a started block that no connected calendar holds is placed again from now", () => {
@@ -495,10 +642,12 @@ test('a started block stays frozen when a calendar holds it, or when none is con
     assert.deepEqual(planSchedule(prev, [p], SETTINGS, now), prev);
     assert.deepEqual(planSchedule(prev, [p], SETTINGS, now, { booked: null }), prev);
   }
-  // A missed review from yesterday stays in the past either way.
+  // A missed review from yesterday is booked again either way.
   const overdue = problem('old', { due: day(-1) });
   const old = schedule([slot(overdue, time(-1, 9), 40)]);
-  assert.deepEqual(planSchedule(old, [overdue], SETTINGS, time(0, 8), { booked: new Set() }), old);
+  for (const booked of [new Set(), new Set(['old']), null]) {
+    assert.equal(planSchedule(old, [overdue], SETTINGS, time(0, 8), { booked }).entries.old.start, time(0, 9));
+  }
 });
 
 test('a review keeps its day (and its block) when the time zone changes', () => {
@@ -546,7 +695,7 @@ test('a very full day overflows past midnight instead of wrapping, and never ove
   const full = ids.map((id) => problem(id, { due: day(1), rating: 'hard', ratedAt }));
   const nextDay = problem('next-day', { due: day(2), rating: 'easy', ratedAt });
 
-  const plan = planSchedule(null, [...full, nextDay], SETTINGS, time(0, 8));
+  const plan = planSchedule(null, [...full, nextDay], withSettings({ dailyLimit: 30 * 60 }), time(0, 8));
   assert.equal(plan.entries.p14.start, time(1, 23)); // 09:00 + 14 h
   assert.equal(plan.entries.p15.start, time(2, 0)); // runs on past midnight
   assert.equal(plan.entries.p29.end, time(2, 15));
@@ -603,7 +752,7 @@ test('accepts a stored problem map and skips problems without a due date', () =>
 
 test('missing or invalid settings fall back to the defaults', () => {
   const p = problem('a', { due: day(1), rating: 'hard' });
-  const expected = planSchedule(null, [p], SETTINGS, time(0, 8));
+  const expected = planSchedule(null, [p], withSettings({ dailyLimit: 60 }), time(0, 8));
   assert.deepEqual(planSchedule(null, [p], {}, time(0, 8)), expected);
   assert.deepEqual(
     planSchedule(null, [p], { startTime: '25:99', durations: { hard: -5 }, reminderMinutes: 'soon' }, time(0, 8)),
@@ -940,6 +1089,7 @@ test('sync lifecycle: connect, re-rate, review, delete', () => {
 
 test('sync lifecycle: settings change and a missed review', () => {
   const cal = fakeCalendar();
+  const counts = (ops) => Object.fromEntries(Object.entries(ops).map(([k, v]) => [k, v.length]));
   const problems = [problem('a', { due: day(1), rating: 'okay' }), problem('b', { due: day(2), rating: 'easy' })];
   let plan = planSchedule(null, problems, SETTINGS, time(0, 8));
   cal.apply(diffEvents(plan.entries, cal.stored, time(0, 8)));
@@ -959,15 +1109,23 @@ test('sync lifecycle: settings change and a missed review', () => {
   assert.deepEqual(ops.update.map((u) => u.slot.start), [time(1, 7), time(2, 7)]);
   cal.apply(ops);
 
-  // a is never reviewed: two days later its block stays where it was, in the past.
+  // Neither is reviewed: two days later their old blocks stay in the past as
+  // history, and new blocks are booked, the longest missed first.
   const aEvent = cal.stored.a.id;
-  plan = planSchedule(plan, problems, settings, time(3, 12));
-  assert.equal(plan.entries.a.start, time(1, 7));
-  assert.deepEqual(diffEvents(plan.entries, cal.stored, time(3, 12)), EMPTY);
+  plan = planSchedule(plan, problems, settings, time(3, 6));
+  assert.equal(plan.entries.a.start, time(3, 7));
+  assert.equal(plan.entries.a.overdueSince, dayKey(day(1)));
+  assert.equal(plan.entries.b.start, time(3, 7, 40));
+  ops = diffEvents(plan.entries, cal.stored, time(3, 6));
+  assert.deepEqual(counts(ops), { create: 2, update: 0, remove: 0, forget: 2 });
+  cal.apply(ops);
   assert.equal(cal.onCalendar.get(aEvent).start, time(1, 7));
 
-  // Changing settings now doesn't touch the missed (started) block either.
-  plan = planSchedule(plan, problems, withSettings({ startTime: '11:00' }), time(3, 12));
-  assert.equal(plan.entries.a.start, time(1, 7));
-  assert.deepEqual(diffEvents(plan.entries, cal.stored, time(3, 12)), EMPTY);
+  // Changing settings now moves the new block, never the old one.
+  plan = planSchedule(plan, problems, withSettings({ startTime: '13:00' }), time(3, 6, 30));
+  assert.equal(plan.entries.a.start, time(3, 13));
+  ops = diffEvents(plan.entries, cal.stored, time(3, 6, 30));
+  assert.deepEqual(counts(ops), { create: 0, update: 2, remove: 0, forget: 0 });
+  cal.apply(ops);
+  assert.equal(cal.onCalendar.get(aEvent).start, time(1, 7));
 });
