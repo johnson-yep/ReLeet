@@ -999,17 +999,30 @@ test('adopting imported calendars leaves a connected one alone', async () => {
   assert.equal(stored('yahoo'), undefined);
 });
 
-test('marking calendars stale makes the next sync delete upcoming ReLeet events it does not know', async () => {
+test('after being idle, a sync removes events it does not know and puts back the ones it does', async () => {
   const sync = makeSync();
-  await setProblems(problem('two-sum', 'easy', 1));
+  await setProblems(problem('two-sum', 'easy', 1), problem('lru-cache', 'hard', 2), problem('jump-game', 'okay', 3));
   await sync.connectCalendar('google');
   const calendarId = stored('google').calendarId;
-  // Another computer added a block for the same review while this one was idle.
-  accounts.google.calendars.get(calendarId).set('theirs', { problemId: 'two-sum', start: at(1, 9), end: at(1, 9, 20) });
+  const events = accounts.google.calendars.get(calendarId);
+  // While this computer was idle, another one with the same calendar:
+  events.set('theirs', { problemId: 'two-sum', start: at(1, 9), end: at(1, 9, 20) }); // added a block
+  events.delete(stored('google').events['lru-cache'].id); // deleted one this computer knows
+  const moved = stored('google').events['jump-game'].id;
+  events.set(moved, { ...events.get(moved), start: at(3, 15), end: at(3, 15, 40) }); // moved another
   await sync.markCalendarsStale();
   assert.equal(stored('google').checkStrays, true);
   await sync.syncCalendars();
-  assert.equal(accounts.google.events().has('theirs'), false);
-  assert.equal(accounts.google.events().size, 1);
+  assert.equal(events.has('theirs'), false);
+  assert.equal(events.size, 3);
+  assertInSync('google');
   assert.equal(stored('google').checkStrays, false);
+});
+
+test('disconnecting while keeping the sign-in deletes the calendar but signs nothing out', async () => {
+  const sync = makeSync();
+  await sync.connectCalendar('google');
+  assert.equal((await sync.disconnectCalendar('google', { keepSignIn: true })).status, 'disconnected');
+  assert.equal(accounts.google.calendars.size, 0);
+  assert.deepEqual(counts.signOut, []);
 });

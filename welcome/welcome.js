@@ -3,12 +3,13 @@
 // makes this computer the main one.
 
 import { getSettings, onSettingsChanged, updateSettings } from '../lib/storage.js';
-import { claimIfUnclaimed, computerRole, onRoleChanged } from '../lib/computer.js';
+import { claimIfUnclaimed, claimMainComputer, computerRole, onRoleChanged } from '../lib/computer.js';
 import { plural } from '../lib/format.js';
 import { mountCalendarCards, send, sentence } from '../options/calendar-cards.js';
 
 const $ = (id) => document.getElementById(id);
 let settings = await getSettings();
+let role = await computerRole();
 
 function setStatus(el, text, kind = 'muted') {
   el.textContent = text;
@@ -41,7 +42,7 @@ $('import').addEventListener('click', async () => {
 });
 
 // Step 3
-mountCalendarCards($('calendar-cards'));
+mountCalendarCards($('calendar-cards'), { isIdle: () => role === 'idle' });
 
 // Step 4: saved as it changes, like Settings.
 const savedTimers = new Map();
@@ -88,6 +89,10 @@ $('daily-limit').addEventListener('input', () => {
   limitTimer = setTimeout(saveDailyLimit, 700);
 });
 $('daily-limit').addEventListener('change', saveDailyLimit);
+// Closing the tab right after typing doesn't fire change.
+addEventListener('pagehide', () => {
+  if (limitTimer) saveDailyLimit();
+});
 
 // Finishing makes this the main computer, unless another one already is:
 // taking over needs the confirmation in Settings.
@@ -96,16 +101,25 @@ $('done').addEventListener('click', async () => {
   location.href = 'https://leetcode.com/problemset/';
 });
 
-$('open-settings').addEventListener('click', (event) => {
-  event.preventDefault();
-  chrome.runtime.openOptionsPage();
+// Taking over from another computer, with the same confirmation as the popup and Settings.
+$('use-here').addEventListener('click', () => {
+  $('idle-ask').hidden = true;
+  $('idle-confirm').hidden = false;
+  $('use-here-confirm').focus();
 });
+$('use-here-cancel').addEventListener('click', () => {
+  $('idle-confirm').hidden = true;
+  $('idle-ask').hidden = false;
+  $('use-here').focus();
+});
+$('use-here-confirm').addEventListener('click', () => claimMainComputer());
 
-function renderRole(role) {
+function renderRole(next) {
+  role = next;
   $('idle-notice').hidden = role !== 'idle';
 }
 onRoleChanged(renderRole);
-renderRole(await computerRole());
+renderRole(role);
 
 onSettingsChanged((next) => {
   settings = next;

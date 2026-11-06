@@ -4,6 +4,7 @@ import {
   getPendingMap,
   getProblemMap,
   getSettings,
+  onCalendarsChanged,
   onPendingChanged,
   onProblemsChanged,
   onSettingsChanged,
@@ -11,7 +12,17 @@ import {
 } from './lib/storage.js';
 import { RATINGS, dayKey } from './lib/srs.js';
 import { master, ratePending, undo } from './lib/actions.js';
-import { computerRole, isActive, onRoleChanged, releaseMainComputer, rememberIdle, wasIdle } from './lib/computer.js';
+import {
+  clearIdleNote,
+  computerRole,
+  isActive,
+  mainComputerUses,
+  onRoleChanged,
+  publishCalendars,
+  releaseMainComputer,
+  rememberIdle,
+  wasIdle,
+} from './lib/computer.js';
 import {
   SYNC_INTERVAL_MINUTES,
   detectionsToNotify,
@@ -94,12 +105,19 @@ const active = async () => isActive(await computerRole());
 // one (the data stays, for Export).
 async function init() {
   if (!(await active())) {
-    await rememberIdle();
+    // A copy with data stays idle until it's claimed (see computer.js); an empty one has nothing out of date.
+    const { problems, calendars } = await chrome.storage.local.get(['problems', 'calendars']);
+    if (Object.keys(problems ?? {}).length || Object.keys(calendars ?? {}).length) await rememberIdle();
     await Promise.all(ALARMS.map((name) => chrome.alarms.clear(name)));
     await chrome.action.setBadgeText({ text: '' });
     return;
   }
-  if (await wasIdle()) await markCalendarsStale();
+  // Marked before the note goes, so a worker stopped in between still marks them next time.
+  if (await wasIdle()) {
+    await markCalendarsStale();
+    await clearIdleNote();
+  }
+  await publishCalendars(await getCalendars());
   await ensurePeriodicAlarm(PERIODIC_ALARM, 30);
   await ensurePeriodicAlarm(CALENDAR_ALARM, CALENDAR_SYNC_MINUTES);
   const settings = await getSettings();
@@ -233,8 +251,7 @@ const EXTENSION_HANDLERS = {
   'sync-if-stale': () => runLeetCodeSync(syncIfStale),
   'import-recent': importRecent,
   'calendar-connect': (m) => connectCalendar(m.provider, m.credentials),
-  'calendar-disconnect': async (m) =>
-    (await active()) ? disconnectCalendar(m.provider, { force: Boolean(m.force) }) : forgetCalendar(m.provider),
+  'calendar-disconnect': (m) => disconnectHere(m.provider, { force: Boolean(m.force) }),
   'calendar-sync-now': syncCalendars,
   'test-notification': testNotification,
   'export-data': exportData,
@@ -279,6 +296,12 @@ onProblemsChanged(async () => {
 
 onPendingChanged(async () => {
   if (await active()) updateBadge();
+});
+
+// Tells other computers which calendars are the main computer's (computer.js).
+// Writes only when an id changes, not on every event a sync stores.
+onCalendarsChanged(async (calendars) => {
+  if (await active()) await publishCalendars(calendars);
 });
 
 // Solves found by the background check raise a notification. Ones detected on
@@ -454,21 +477,30 @@ async function importData(data) {
   return { status: 'ok', problems: Object.keys(imported.problems).length, added: merged.added, calendars: adopted };
 }
 
+// On a computer that isn't the main one, a calendar the main computer also
+// uses (after Export / Import) is only forgotten here; one only this computer
+// used is deleted, but its Google grant, which the main computer shares, stays.
+async function disconnectHere(name, { force = false } = {}) {
+  if (await active()) return disconnectCalendar(name, { force });
+  const state = (await getCalendars())[name];
+  if (await mainComputerUses(name, state?.calendarId)) return forgetCalendar(name);
+  return disconnectCalendar(name, { force, keepSignIn: true });
+}
+
 // "Delete all my ReLeet data": the ReLeet calendars in connected accounts
 // first (that needs the sign-ins), then everything stored in this browser.
 // `force` goes ahead when a calendar couldn't be deleted, leaving it behind.
-// On a computer that isn't the main one, the calendars belong to the main
-// computer, so they stay.
+// On a computer that isn't the main one, a calendar the main computer also
+// uses stays (see disconnectHere).
 async function deleteAllData({ force = false } = {}) {
   const calendars = await getCalendars();
   const connected = PROVIDER_NAMES.filter((n) => calendars[n]?.connected);
-  const main = await active();
   const failed = [];
-  if (main) {
-    for (const name of connected) {
-      const result = await disconnectCalendar(name);
-      if (result.status !== 'disconnected') failed.push({ provider: name, error: result.error });
-    }
+  const kept = [];
+  for (const name of connected) {
+    const result = await disconnectHere(name);
+    if (result.keptCalendar) kept.push(name);
+    else if (result.status !== 'disconnected') failed.push({ provider: name, error: result.error });
   }
   if (failed.length && !force) return { status: 'error', failed };
   await releaseMainComputer();
@@ -477,5 +509,5 @@ async function deleteAllData({ force = false } = {}) {
   await chrome.storage.session.clear();
   await forgetSecrets();
   await chrome.action.setBadgeText({ text: '' });
-  return { status: 'deleted', leftBehind: main ? failed.map((f) => f.provider) : connected };
+  return { status: 'deleted', leftBehind: [...failed.map((f) => f.provider), ...kept] };
 }

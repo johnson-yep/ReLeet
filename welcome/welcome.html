@@ -33,10 +33,20 @@
     </header>
 
     <!-- Chrome Sync installs ReLeet on every computer; on a second one this explains why nothing happens. -->
-    <p id="idle-notice" class="card banner" hidden>
-      ReLeet is already active on another computer, so this one stays idle. To use ReLeet here instead, open
-      <a id="open-settings" href="#">Settings</a> and choose <strong>Use this computer instead</strong>.
-    </p>
+    <div id="idle-notice" class="card banner" hidden>
+      <p>ReLeet is already active on another computer, so this one stays idle.</p>
+      <div id="idle-ask" class="button-row">
+        <button id="use-here" type="button">Use this computer instead</button>
+      </div>
+      <div id="idle-confirm" hidden>
+        <p>The other computer stops checking LeetCode and updating your calendars. Your problems stay there:
+          export them in its Settings and import them here.</p>
+        <div class="button-row">
+          <button id="use-here-confirm" type="button" class="btn-primary">Use this computer</button>
+          <button id="use-here-cancel" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
 
     <ol class="steps">
       <li id="step-leetcode">

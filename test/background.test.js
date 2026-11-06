@@ -505,3 +505,31 @@ test('a computer that becomes the main one again checks its calendars for blocks
   assert.equal(chrome.dump().calendars.google.checkStrays, true);
   assert.equal(chrome.dump().idleSince, undefined);
 });
+
+test("on a computer that is not the main one, a calendar only it used is deleted (without signing out)", async () => {
+  const apple = { connected: true, calendarId: 'https://p01-caldav.icloud.com/1/calendars/mine/', events: {}, account: 'me@icloud.com', auth: { appleId: 'me@icloud.com', appPassword: 'x' } };
+  const realFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    requests.push(String(url));
+    throw new Error('offline');
+  };
+  try {
+    const sync = { ...otherComputer, mainCalendars: { apple: 'https://p01-caldav.icloud.com/1/calendars/theirs/' } };
+    const { send } = await startedWorker({ storage: { calendars: { apple } }, sync });
+    const res = await send({ type: 'calendar-disconnect', provider: 'apple' });
+    // It tried to delete this computer's own calendar (and couldn't, offline), rather than just forgetting it.
+    assert.equal(res.status, 'error');
+    assert.ok(requests.some((url) => url.includes('icloud.com')));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('the main computer publishes its calendar ids; an empty idle copy keeps no idle note', async () => {
+  const google = { connected: true, calendarId: 'g1', events: {} };
+  const main = await startedWorker({ storage: { calendars: { google } } });
+  assert.deepEqual((await main.chrome.storage.sync.get('mainCalendars')).mainCalendars, { google: 'g1' });
+  const empty = await startedWorker({ sync: otherComputer });
+  assert.equal(empty.chrome.dump().idleSince, undefined);
+});

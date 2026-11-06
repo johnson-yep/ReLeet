@@ -125,6 +125,7 @@ test('a copy that has been idle stays idle when the main computer gives up its c
   await computer.claimMainComputer();
   assert.equal(await computer.computerRole(), 'main');
   assert.equal(await computer.wasIdle(), true);
+  await computer.clearIdleNote();
   assert.equal(await computer.wasIdle(), false);
   // A fresh copy with no claim anywhere runs, so its first rating can claim.
   chrome.reset();
@@ -138,4 +139,17 @@ test('the role is announced when this copy notes it went idle, not only when the
   await computer.rememberIdle(1);
   await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(roles, ['idle']);
+});
+
+test('the main computer publishes the calendars it uses; others ask before deleting theirs', async () => {
+  chrome.reset();
+  assert.equal(await computer.mainComputerUses('google', 'g1'), true); // nothing published: keep, to be safe
+  await computer.publishCalendars({ google: { connected: true, calendarId: 'g1' }, apple: { connected: false, calendarId: 'a1' }, x: {} });
+  assert.deepEqual((await chrome.storage.sync.get('mainCalendars')).mainCalendars, { google: 'g1', apple: 'a1' });
+  assert.equal(await computer.mainComputerUses('google', 'g1'), true);
+  assert.equal(await computer.mainComputerUses('google', 'g-old'), false);
+  assert.equal(await computer.mainComputerUses('apple', 'a1'), true);
+  await computer.claimMainComputer();
+  await computer.releaseMainComputer();
+  assert.deepEqual(await chrome.storage.sync.get(['mainComputer', 'mainCalendars']), {});
 });

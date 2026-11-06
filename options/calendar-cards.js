@@ -7,6 +7,7 @@ import { getCalendars, onCalendarsChanged } from '../lib/storage.js';
 import { GOOGLE_NEEDS_CHROME, chromeGoogleAuth, isGoogleClientIdConfigured } from '../lib/calendars/google.js';
 import { ICLOUD_ORIGINS } from '../lib/calendars/apple.js';
 import { timeAgo } from '../lib/format.js';
+import { mainComputerUses } from '../lib/computer.js';
 
 // Small DOM builder. Text always goes in as text nodes, never as HTML.
 export function h(tag, props = {}, ...children) {
@@ -280,7 +281,9 @@ export function mountCalendarCards(container, { onRender = () => {}, isIdle = ()
   async function disconnect(provider, force = false) {
     const { name, title } = provider;
     const account = calendars[name]?.account;
-    const question = isIdle()
+    // The calendar of a computer that isn't the main one stays if the main computer uses it too.
+    const shared = isIdle() && (await mainComputerUses(name, calendars[name]?.calendarId));
+    const question = shared
       ? `Disconnect ${title} on this computer?\n\nReLeet is active on another computer, which uses the same ` +
         '“ReLeet” calendar, so the calendar stays in your account.'
       : `Disconnect ${title}?\n\nThis deletes the “ReLeet” calendar and all of its review events from ` +

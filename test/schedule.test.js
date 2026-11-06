@@ -1143,11 +1143,24 @@ test('a review done today keeps counting toward the limit, so the next one does 
   assert.equal(later.entries.b.day, dayKey(day(1)));
   assert.equal(later.entries.c.day, dayKey(day(2)));
   assert.equal(later.entries.b.start, morning.entries.b.start);
+  // One rating sets off several plans (the prompt, the sync, the badge): each sees the same.
+  const again = planSchedule(later, [reviewedA, b, c], limited(60), time(0, 9, 37));
+  assert.deepEqual(again, later);
+  assert.deepEqual(planSchedule(again, [reviewedA, b, c], limited(60), time(0, 15)), later);
+  // The next day the finished block is forgotten.
+  assert.equal(planSchedule(later, [reviewedA, b, c], limited(60), time(1, 8)).doneToday, undefined);
 
   // With room left today, the next review goes after the finished block, not over it.
-  const roomy = planSchedule(morning, [reviewedA, b, c], limited(90), time(0, 9, 36));
+  // (a reviewed at 9:10, while its 9:00 to 9:40 block was running).
+  const reviewedEarly = recordReview(a, 'easy', { at: time(0, 9, 10) });
+  const roomy = planSchedule(morning, [reviewedEarly, b, c], limited(90), time(0, 9, 10));
   assert.equal(roomy.entries.b.day, dayKey(day(0)));
   assert.ok(roomy.entries.b.start >= morning.entries.a.end, 'not over the finished block');
+  assert.equal(planSchedule(roomy, [reviewedEarly, b, c], limited(90), time(0, 9, 11)).entries.b.start, roomy.entries.b.start);
+
+  // Stopping tracking a review gives its time back.
+  const stopped = planSchedule(morning, [b, c], limited(60), time(0, 9, 36));
+  assert.equal(stopped.entries.b.day, dayKey(day(0)));
 });
 
 test('a problem whose review day is not a real date is left out instead of stalling the plan', () => {

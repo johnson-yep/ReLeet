@@ -28,6 +28,8 @@
   const REQUEST_TIMEOUT_MS = 15 * 1000;
   // Long enough to read the confirmation and click Undo.
   const CONFIRM_HIDE_MS = 10 * 1000;
+  // How long after a rating its Undo still works: the worker keeps it 15 s.
+  const RATING_UNDO_MS = 14 * 1000;
 
   // The prompt never takes focus by itself: it can appear while you're still
   // typing, and those keys would land on a rating button. This shortcut moves
@@ -617,8 +619,8 @@
         actions.unshift(actionButton('Mark mastered', () => masterIt(current, { afterRating: true })), ' · ');
       }
       // What undoing a later "Mark mastered" goes back to.
-      current.rated = { content: [...parts, ...actions], undoToken: res.undoToken };
-      finish(current, current.rated.content, res.undoToken);
+      current.rated = { parts, actions, undoToken: res.undoToken, at: Date.now() };
+      finish(current, [...parts, ...actions], res.undoToken);
     } else if (res?.status === 'gone') {
       finish(current, ['Already rated in ReLeet.']);
     } else {
@@ -654,10 +656,12 @@
     const res = await send({ type: 'undo', token });
     if (current !== prompt) return;
     if (res?.status === 'ok' && current.undoesTo) {
-      // Mastered after a rating: back to that rating's confirmation, whose Undo still works.
-      const { content, undoToken } = current.undoesTo;
+      // Mastered after a rating: back to that rating's confirmation, with its
+      // Undo while the worker still keeps it.
+      const { parts, actions, undoToken, at } = current.undoesTo;
       current.undoesTo = null;
-      finish(current, content, undoToken);
+      const fresh = Date.now() - at < RATING_UNDO_MS;
+      finish(current, fresh ? [...parts, ...actions] : parts, fresh ? undoToken : null);
     } else if (res?.status === 'ok') {
       // Back to asking, as before the rating.
       clearTimeout(current.hideTimer);
