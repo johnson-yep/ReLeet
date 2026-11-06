@@ -7,9 +7,9 @@
   "host_permissions": [
     "https://leetcode.com/*",
     "https://www.googleapis.com/*",
-    "https://oauth2.googleapis.com/*",
-    "https://*.icloud.com/*"
+    "https://oauth2.googleapis.com/*"
   ],
+  "optional_host_permissions": ["https://*.icloud.com/*"],
   "oauth2": {
     "client_id": "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
     "scopes": ["https://www.googleapis.com/auth/calendar.app.created"]

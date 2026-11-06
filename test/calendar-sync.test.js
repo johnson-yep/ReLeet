@@ -951,3 +951,18 @@ test('the chrome-wired instance connects, syncs and disconnects Apple over CalDA
     globalThis.fetch = realFetch;
   }
 });
+
+test('without the iCloud permission, Apple asks to be reconnected instead of failing on the network', async () => {
+  const realFetch = globalThis.fetch;
+  const server = fakeCalDav();
+  globalThis.fetch = server.fetch;
+  chrome.permissions = { contains: async ({ origins }) => !origins.some((o) => o.includes('icloud')) };
+  try {
+    const res = await calendarSync.connectCalendar('apple', { appleId: 'me@icloud.com', appPassword: 'app-pass' });
+    assert.deepEqual(res, { status: 'error', error: 'ReLeet needs your permission to reach iCloud.' });
+    assert.deepEqual(server.requests, []);
+  } finally {
+    delete chrome.permissions;
+    globalThis.fetch = realFetch;
+  }
+});
