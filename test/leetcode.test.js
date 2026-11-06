@@ -175,3 +175,16 @@ test('signedInUser reads userStatus', async () => {
   const broken = fakeFetch(json({ data: {} }));
   await assert.rejects(createLeetCodeClient({ fetch: broken }).signedInUser(), LeetCodeError);
 });
+
+test('questionTitle looks up the real title of a problem, or null when there is none', async () => {
+  const fetch = fakeFetch((url, init) => {
+    const { variables } = JSON.parse(init.body);
+    return json({ data: { question: variables.titleSlug === 'lru-cache' ? { title: 'LRU Cache', titleSlug: 'lru-cache' } : null } });
+  });
+  const client = createLeetCodeClient({ fetch });
+  assert.equal(await client.questionTitle('lru-cache'), 'LRU Cache');
+  assert.equal(await client.questionTitle('not-a-problem'), null);
+  assert.match(fetch.calls[0].body.query, /question\(titleSlug: \$titleSlug\)/);
+  assert.equal(fetch.calls[0].init.credentials, 'omit');
+  await assert.rejects(createLeetCodeClient({ fetch: fakeFetch(html(503)) }).questionTitle('x'), LeetCodeError);
+});

@@ -501,7 +501,13 @@ test('chromeGoogleAuth.getToken: revoked → reconnect, offline → plain error'
   const auth = chromeGoogleAuth();
   await assert.rejects(auth.getToken(false), isCalendarError({ reconnect: true }));
   message = 'The user did not approve access.';
-  await assert.rejects(auth.getToken(true), isCalendarError({ reconnect: true, message: /did not approve/ }));
+  await assert.rejects(auth.getToken(true), isCalendarError({ reconnect: true, message: 'Google sign-in was cancelled.' }));
+  await assert.rejects(auth.getToken(false), isCalendarError({ reconnect: true, message: 'Google sign-in expired.' }));
+  for (message of ['OAuth2 request failed: Service responded with error: \'access_denied\'', 'Access blocked: app is unverified']) {
+    await assert.rejects(auth.getToken(true), isCalendarError({ reconnect: true, message: /Google didn't let ReLeet sign in/ }));
+  }
+  message = 'This API is not supported on Microsoft Edge.';
+  await assert.rejects(auth.getToken(true), isCalendarError({ reconnect: true, message: /needs Google Chrome/ }));
   message = 'OAuth2 request failed: Connection failed (-106).';
   await assert.rejects(
     auth.getToken(false),

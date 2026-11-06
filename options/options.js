@@ -1,68 +1,73 @@
 import {
-  getSettings,
-  updateSettings,
   getLeetCodeState,
-  getCalendars,
-  onSettingsChanged,
+  getSettings,
   onLeetCodeStateChanged,
-  onCalendarsChanged,
+  onSettingsChanged,
+  updateSettings,
 } from '../lib/storage.js';
-import { chromeGoogleAuth, isGoogleClientIdConfigured } from '../lib/calendars/google.js';
-import { isOutlookConfigured } from '../lib/calendars/outlook.js';
+import { RATINGS } from '../lib/srs.js';
+import { claimMainComputer, computerRole, onRoleChanged } from '../lib/computer.js';
+import { plural, timeAgo } from '../lib/format.js';
+import { mountCalendarCards, send, sentence } from './calendar-cards.js';
 
 const $ = (id) => document.getElementById(id);
 
-const MIN_DURATION = 5;
-const MAX_DURATION = 240;
-const RATINGS = ['easy', 'medium', 'hard'];
+const LIMITS = {
+  dailyLimit: { min: 15, max: 600 },
+  duration: { min: 5, max: 240 },
+};
 
 let settings = null;
 let leetcode = {};
-let calendars = {};
+let role = null;
 
 function setStatus(el, text, kind = '') {
   el.textContent = text;
   el.className = kind || 'muted';
 }
 
-// Small DOM builder. Text always goes in as text nodes, never as HTML.
-function h(tag, props = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (value == null || value === false) continue;
-    if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
-    else if (key === 'class') el.className = value;
-    else if (key in el && typeof value !== 'string') el[key] = value;
-    else el.setAttribute(key, value === true ? '' : value);
-  }
-  el.append(...children.flat().filter((c) => c != null && c !== false));
-  return el;
+// "Saved" beside a field for a moment after it saves.
+const savedTimers = new Map();
+function showSaved(key) {
+  const el = document.querySelector(`.saved[data-for="${key}"]`);
+  if (!el) return;
+  el.textContent = 'Saved';
+  clearTimeout(savedTimers.get(key));
+  savedTimers.set(key, setTimeout(() => (el.textContent = ''), 2000));
 }
 
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-const sentence = (text) => (/[.!?]$/.test(text) ? text : `${text}.`);
-const formatDateTime = (ms) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-
-function timeAgo(ms) {
-  const minutes = Math.round((Date.now() - ms) / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  return hours < 24 ? `${hours} h ago` : formatDateTime(ms);
+async function save(key, patch) {
+  settings = await updateSettings(patch);
+  showSaved(key);
 }
 
-// The worker does all network work and is the only writer of the calendars key.
-async function send(message) {
-  try {
-    return (await chrome.runtime.sendMessage(message)) ?? { status: 'error', error: 'No answer from ReLeet.' };
-  } catch (e) {
-    // Chrome stopped the worker before it answered (restarted, or it waited too long).
-    if (/message (channel|port) closed|receiving end does not exist/i.test(e?.message ?? '')) {
-      return { status: 'error', error: 'ReLeet stopped before it finished. Try again.' };
-    }
-    return { status: 'error', error: e.message };
-  }
+// Number fields save once typing pauses (or the field changes), not on every
+// key: "60" would otherwise save 6 first, and every save moves calendar blocks.
+const pendingSaves = new Map();
+function saveSoon(key, makePatch) {
+  clearTimeout(pendingSaves.get(key)?.timer);
+  const run = () => {
+    pendingSaves.delete(key);
+    const patch = makePatch();
+    if (patch) save(key, patch);
+  };
+  pendingSaves.set(key, { run, makePatch, timer: setTimeout(run, 700) });
 }
+function saveNow(key) {
+  const pending = pendingSaves.get(key);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pending.run();
+}
+// Closing the tab right after typing doesn't fire change, and the page is
+// gone before a save that reads first could write. So write at once, from the
+// settings this page already has.
+addEventListener('pagehide', () => {
+  const patches = [...pendingSaves.values()].map(({ timer, makePatch }) => (clearTimeout(timer), makePatch()));
+  pendingSaves.clear();
+  const patch = Object.assign({}, ...patches.filter(Boolean));
+  if (Object.keys(patch).length) chrome.storage.local.set({ settings: { ...settings, ...patch } });
+});
 
 // ---- LeetCode ----------------------------------------------------------------
 
@@ -75,46 +80,36 @@ function parseUsername(input) {
   return (profile && profile[1].toLowerCase() !== 'problems' ? profile[1] : text).replace(/^@/, '');
 }
 
-// True while the username box holds unsaved text, which a re-render must keep.
-let usernameDirty = false;
-
 function renderLeetCode() {
   const username = configuredUsername();
-  const source = settings?.leetcodeUsernameSource;
-  if (!usernameDirty) $('username-input').value = username;
+  const input = $('username-input');
+  if (document.activeElement !== input) input.value = username;
 
   $('username-note').textContent = !username
-    ? "Not set. Open (or reload) a leetcode.com page while signed in and it's picked up automatically, or type it here."
-    : source === 'auto'
-      ? 'Detected automatically from leetcode.com. Saving it here keeps it fixed.'
-      : "Typed here. Signing in to leetcode.com as someone else won't change it.";
+    ? 'Open leetcode.com while signed in and ReLeet picks it up, or type it here.'
+    : settings.leetcodeUsernameSource === 'auto'
+      ? 'Picked up from leetcode.com.'
+      : "Typed here, so signing in to leetcode.com as someone else won't change it.";
 
   const checked = leetcode.username === username;
-  const rows = username
-    ? [
-        ['Checks', 'right after you submit on leetcode.com, and every 15 minutes'],
-        ['Last check', checked && leetcode.lastSyncAt ? formatDateTime(leetcode.lastSyncAt) : 'not yet'],
-        ['Last error', (checked && leetcode.lastError) || 'none'],
-      ]
-    : [['Checks', 'off until a username is set']];
-  $('leetcode-info').replaceChildren(
-    ...rows.flatMap(([label, value]) => [
-      h('dt', {}, label),
-      h('dd', { class: label === 'Last error' && value !== 'none' ? 'error' : null }, value),
-    ]),
-  );
+  const last = $('last-check');
+  if (!username) {
+    setStatus(last, 'ReLeet checks LeetCode once it knows your username.');
+  } else if (checked && leetcode.lastError) {
+    setStatus(last, `The last check failed: ${sentence(String(leetcode.lastError))}`, 'error');
+  } else {
+    setStatus(last, checked && leetcode.lastSyncAt ? `Last checked ${timeAgo(leetcode.lastSyncAt)}.` : 'Not checked yet.');
+  }
   $('sync-now').disabled = $('import-recent').disabled = !username;
 }
 
 function describeCheck(result) {
   const messages = {
-    ok: () =>
-      result.added
-        ? `Done. ${plural(result.added, 'new submission')} to rate in the popup.`
-        : 'Done. No new accepted submissions.',
-    baseline: () => 'Connected. Accepted submissions from now on will be detected.',
-    unconfigured: () => 'Save a username first.',
-    error: () => `Failed: ${result.error}`,
+    ok: () => (result.added ? `Done. ${plural(result.added, 'new solve')} to rate in the popup.` : 'Done. Nothing new.'),
+    baseline: () => 'Connected. ReLeet notices your accepted solves from now on.',
+    unconfigured: () => 'Enter your username first.',
+    idle: () => 'ReLeet is active on another computer.',
+    error: () => `That didn't work: ${sentence(result.error ?? 'something went wrong')}`,
   };
   return messages[result.status]?.() ?? 'Done.';
 }
@@ -123,27 +118,26 @@ async function runCheck() {
   const status = $('leetcode-status');
   setStatus(status, 'Checking…');
   const result = await send({ type: 'sync-now' });
-  setStatus(status, describeCheck(result), result.status === 'error' ? 'error' : 'ok');
+  setStatus(status, describeCheck(result), ['error', 'idle'].includes(result.status) ? 'error' : 'ok');
 }
 
+let usernameTimer = null;
 $('username-input').addEventListener('input', () => {
-  usernameDirty = true;
+  clearTimeout(usernameTimer);
+  usernameTimer = setTimeout(saveUsername, 700);
+});
+$('username-input').addEventListener('change', () => {
+  clearTimeout(usernameTimer);
+  saveUsername();
 });
 
-$('username-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const status = $('leetcode-status');
+async function saveUsername() {
   const username = parseUsername($('username-input').value);
-  // An empty name goes back to auto-detection.
-  settings = await updateSettings({ leetcodeUsername: username, leetcodeUsernameSource: username ? 'manual' : null });
-  usernameDirty = false;
+  if (username === configuredUsername()) return;
+  // An empty name goes back to picking it up from leetcode.com.
+  await save('username-input', { leetcodeUsername: username, leetcodeUsernameSource: username ? 'manual' : null });
   renderLeetCode();
-  if (!username) {
-    setStatus(status, 'Username cleared. It will be picked up the next time you visit leetcode.com signed in.', 'ok');
-    return;
-  }
-  await runCheck();
-});
+}
 
 $('sync-now').addEventListener('click', runCheck);
 
@@ -156,7 +150,7 @@ $('import-recent').addEventListener('click', async () => {
       status,
       result.added
         ? `Added ${plural(result.added, 'problem')} to rate in the popup.`
-        : 'Nothing new: your recent accepted problems are already tracked or waiting in the popup.',
+        : 'Nothing new: your recent solves are already tracked or waiting in the popup.',
       'ok',
     );
   } else {
@@ -164,299 +158,71 @@ $('import-recent').addEventListener('click', async () => {
   }
 });
 
-// ---- Calendars -----------------------------------------------------------------
+// ---- Schedule ----------------------------------------------------------------
 
-const PROVIDERS = [
-  {
-    name: 'google',
-    title: 'Google Calendar',
-    about:
-      'Uses the Google account Chrome is signed in to (chrome://settings/people). ' +
-      'ReLeet can only see the calendar it creates.',
-    // Named in the Disconnect warning when Google didn't say whose calendar it is.
-    accountFallback: 'the Google account Chrome is signed in to',
-    isConfigured: () => isGoogleClientIdConfigured(chrome.runtime.getManifest().oauth2?.client_id),
-  },
-  {
-    name: 'outlook',
-    title: 'Outlook / Microsoft 365',
-    about: 'Personal Microsoft accounts (Outlook.com, Hotmail) and work or school accounts.',
-    isConfigured: () => isOutlookConfigured(),
-  },
-  {
-    name: 'apple',
-    title: 'Apple iCloud',
-    about: 'Connects over CalDAV with an app-specific password, not your Apple ID password.',
-    isConfigured: () => true,
-  },
-];
-
-// Per-card UI state that isn't in storage: what's in progress and the last
-// message. `signingIn`: Connect hasn't saved the connection yet.
-const ui = Object.fromEntries(
-  PROVIDERS.map((p) => [p.name, { busy: null, message: '', kind: '', forceable: false, signingIn: false }]),
-);
-
-// Created once and reused by every render, so what the user typed survives re-renders.
-const appleFields = {
-  appleId: h('input', {
-    type: 'email',
-    placeholder: 'Apple ID email',
-    autocomplete: 'username',
-    'aria-label': 'Apple ID email',
-    'data-action': 'apple-id',
-  }),
-  appPassword: h('input', {
-    type: 'password',
-    placeholder: 'App-specific password (xxxx-xxxx-xxxx-xxxx)',
-    autocomplete: 'off',
-    'aria-label': 'App-specific password',
-    'data-action': 'apple-password',
-  }),
-};
-
-function cardStatus(state) {
-  if (!state?.connected) return [h('p', { class: 'muted' }, 'Not connected.')];
-  const synced = state.lastSyncAt ? `last synced ${timeAgo(state.lastSyncAt)}` : 'not synced yet';
-  const lines = [h('p', {}, state.account ? `Connected as ${state.account} · ${synced}` : `Connected · ${synced}`)];
-  // Error messages give the cause only; the next step is added here.
-  if (state.needsReconnect) {
-    const cause = state.lastError ? sentence(state.lastError) : 'Sign-in expired or was revoked.';
-    lines.push(h('p', { class: 'error' }, `${cause} Reconnect to keep this calendar up to date.`));
-  } else if (state.lastError) {
-    lines.push(h('p', { class: 'error' }, `Last update failed: ${sentence(state.lastError)} Retrying every 15 minutes.`));
-  }
-  return lines;
-}
-
-function appleForm(state) {
-  if (!appleFields.appleId.value && state?.account) appleFields.appleId.value = state.account;
-  return h(
-    'div',
-    { class: 'fields' },
-    appleFields.appleId,
-    appleFields.appPassword,
-    h(
-      'p',
-      { class: 'muted' },
-      'Create one at ',
-      h(
-        'a',
-        { href: 'https://account.apple.com', target: '_blank', rel: 'noopener', 'data-action': 'apple-link' },
-        'account.apple.com',
-      ),
-      ' → Sign-In and Security → App-Specific Passwords. It is stored unencrypted in this browser’s extension storage.',
-    ),
-  );
-}
-
-// Each card is built once. A render swaps what's inside it, except the message
-// line: it stays the same element, so a screen reader reads out each new
-// message (a live region inserted with its text already in it often isn't).
-const cards = Object.fromEntries(
-  PROVIDERS.map(({ name }) => {
-    const body = h('div', {});
-    const message = h('p', { role: 'status' });
-    return [name, { article: h('article', { id: `card-${name}` }, body, message), body, message }];
-  }),
-);
-$('calendar-cards').append(...Object.values(cards).map((card) => card.article));
-
-function renderCard(provider) {
-  const { name, title, about } = provider;
-  const state = calendars[name];
-  const configured = provider.isConfigured();
-  const connected = Boolean(state?.connected);
-  const view = ui[name];
-  const busy = Boolean(view.busy);
-
-  const badge = connected
-    ? state.needsReconnect || state.lastError
-      ? h('span', { class: 'badge warn' }, state.needsReconnect ? 'Needs sign-in' : 'Retrying')
-      : h('span', { class: 'badge on' }, 'Connected')
-    : h('span', { class: 'badge' }, configured ? 'Off' : 'Setup needed');
-
-  const buttons = [];
-  if (!connected || state.needsReconnect) {
-    buttons.push(
-      h(
-        'button',
-        {
-          type: 'button',
-          class: 'connect',
-          'data-action': 'connect',
-          disabled: !configured || busy,
-          onclick: () => connect(provider),
-        },
-        view.busy === 'connect' ? 'Connecting…' : connected ? 'Reconnect' : 'Connect',
-      ),
-    );
-  }
-  if (connected) {
-    buttons.push(
-      h(
-        'button',
-        { type: 'button', class: 'disconnect', 'data-action': 'disconnect', disabled: busy, onclick: () => disconnect(provider) },
-        view.busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect',
-      ),
-    );
-    if (view.forceable) {
-      buttons.push(
-        h(
-          'button',
-          {
-            type: 'button',
-            class: 'force-disconnect',
-            'data-action': 'force-disconnect',
-            disabled: busy,
-            onclick: () => disconnect(provider, true),
-          },
-          'Disconnect anyway',
-        ),
-      );
-    }
-  }
-
-  const showAppleForm = name === 'apple' && (!connected || state.needsReconnect);
-  const card = cards[name];
-  card.article.className = `calendar-card${connected && (state.needsReconnect || state.lastError) ? ' needs-attention' : ''}`;
-  card.body.replaceChildren(
-    ...[
-      // tabindex -1: where focus goes while the card's buttons are disabled.
-      h('div', { class: 'card-head' }, h('h3', { tabindex: '-1', 'data-action': 'heading' }, title), badge),
-      h('p', { class: 'muted' }, about),
-      configured
-        ? null
-        : h('p', { class: 'setup-needed' }, h('strong', {}, 'One-time setup needed'), ' — see SETUP.md in the extension folder.'),
-      cardStatus(state),
-      showAppleForm ? appleForm(state) : null,
-      h('div', { class: 'button-row' }, buttons),
-    ].flat().filter(Boolean),
-  );
-  card.message.className = `card-message ${view.kind || 'muted'}`;
-  if (card.message.textContent !== view.message) card.message.textContent = view.message;
-}
-
-// Rebuilding a card replaces its buttons, which drops keyboard focus. Find
-// the focused control again by card and action and focus its replacement, or
-// the card's heading while that control is disabled (e.g. "Connecting…").
-function focusedCardControl() {
-  const el = document.activeElement;
-  const card = el?.closest?.('.calendar-card');
-  return card && el.dataset.action ? { card: card.id, action: el.dataset.action } : null;
-}
-
-function refocusCardControl(key) {
-  if (!key || document.activeElement !== document.body) return;
-  const card = document.getElementById(key.card);
-  const target = card?.querySelector(`[data-action="${key.action}"]`);
-  if (target && !target.disabled) target.focus();
-  else card?.querySelector('h3')?.focus();
-}
-
-function renderCalendars() {
-  const focused = focusedCardControl();
-  for (const provider of PROVIDERS) renderCard(provider);
-  refocusCardControl(focused);
-  $('calendar-sync-now').hidden = !PROVIDERS.some((p) => calendars[p.name]?.connected);
-}
-
-// What the cards show of a calendar's stored state. A sync saves the state
-// after every event it writes; those saves change nothing on screen.
-const visibleState = (state) =>
-  state && [state.connected, state.account, state.lastSyncAt, state.lastError, state.needsReconnect];
-
-function setCard(name, patch) {
-  Object.assign(ui[name], patch);
-  renderCalendars();
-}
-
-async function connect(provider) {
-  const { name } = provider;
-  let credentials;
-  if (name === 'apple') {
-    credentials = { appleId: appleFields.appleId.value.trim(), appPassword: appleFields.appPassword.value.trim() };
-    if (!credentials.appleId || !credentials.appPassword) {
-      setCard(name, { message: 'Enter your Apple ID email and an app-specific password.', kind: 'error' });
-      return;
-    }
-  }
-  // Google's consent runs from this page: with a Chrome sign-in and 2FA it can
-  // take minutes, longer than Chrome keeps the worker waiting on one request.
-  // The worker then gets the token Chrome cached. Started before any await,
-  // while the click still counts as a user gesture.
-  const googleSignIn = name === 'google' ? chromeGoogleAuth().getToken(true) : null;
-  const waiting = {
-    google: 'Waiting for Google sign-in (a window opens if Google needs you)…',
-    outlook: 'Finish signing in in the window that opened.',
-    apple: 'Checking the password…',
+function renderSchedule() {
+  const minutes = Number(settings.reminderMinutes);
+  $('reminder-text').textContent = minutes > 0 ? `${plural(minutes, 'minute')} before` : 'when it starts';
+  const fill = (id, value) => {
+    if (document.activeElement !== $(id) && $(id).getAttribute('aria-invalid') !== 'true') $(id).value = value;
   };
-  setCard(name, { busy: 'connect', signingIn: true, forceable: false, message: waiting[name], kind: '' });
-  if (googleSignIn) {
-    try {
-      await googleSignIn;
-    } catch (e) {
-      setCard(name, { busy: null, signingIn: false, message: e?.message || "Couldn't sign in to Google.", kind: 'error' });
-      return;
-    }
-  }
-  // The answer comes after the first update of the calendar, which can take a
-  // while; onCalendarsChanged changes the message once the connection is saved.
-  const result = await send({ type: 'calendar-connect', provider: name, credentials });
-  if (result.status === 'connected') {
-    if (name === 'apple') appleFields.appPassword.value = '';
-    // That first update can fail (offline, say) without undoing the connection.
-    const failed = (await getCalendars())[name]?.lastError;
-    setCard(name, {
-      busy: null,
-      signingIn: false,
-      message: failed
-        ? 'Connected, but adding your reviews failed (see above).'
-        : 'Connected. Upcoming reviews are in the “ReLeet” calendar.',
-      kind: failed ? 'error' : 'ok',
-    });
-  } else {
-    setCard(name, { busy: null, signingIn: false, message: result.error ?? "Couldn't connect.", kind: 'error' });
-  }
+  fill('start-time', settings.startTime);
+  fill('daily-limit', settings.dailyLimit);
+  for (const rating of RATINGS) fill(`duration-${rating}`, settings.durations[rating]);
 }
 
-async function disconnect(provider, force = false) {
-  const { name, title } = provider;
-  const account = calendars[name]?.account;
-  if (
-    !force &&
-    !confirm(
-      `Disconnect ${title}?\n\nThis deletes the “ReLeet” calendar and all of its review events from ` +
-        `${account || provider.accountFallback || 'that account'}. Your other calendars aren't touched.`,
-    )
-  ) {
-    return;
-  }
-  setCard(name, { busy: 'disconnect', message: '', kind: '' });
-  const result = await send({ type: 'calendar-disconnect', provider: name, force });
-  if (result.status === 'disconnected') {
-    setCard(name, {
-      busy: null,
-      forceable: false,
-      message: force
-        ? 'Disconnected. The “ReLeet” calendar is still in your account: delete it there, ' +
-          'or connect again to pick it up.'
-        : 'Disconnected.',
-      kind: 'ok',
-    });
-  } else {
-    // Usually offline or the sign-in expired. Forcing forgets the calendar
-    // without deleting it, so the user is told it stays behind.
-    const fix = result.reconnect ? 'Reconnect, then Disconnect again to delete it, or' : 'Try again later, or';
-    setCard(name, {
-      busy: null,
-      forceable: true,
-      message:
-        `Couldn't delete the “ReLeet” calendar: ${sentence(result.error ?? 'unknown error')} ` +
-        `${fix} “Disconnect anyway” to leave it in your account.`,
-      kind: 'error',
-    });
-  }
+// Whole minutes in range, or an error message. Shown beside the field; nothing saves until it's right.
+function checkMinutes(input, { min, max }, what) {
+  const value = Number(input.value);
+  const ok = input.value !== '' && Number.isInteger(value) && value >= min && value <= max;
+  input.setAttribute('aria-invalid', String(!ok));
+  return ok ? null : `${what} must be whole minutes from ${min} to ${max}.`;
+}
+
+function showError(id, message) {
+  $(id).textContent = message ?? '';
+  $(id).hidden = !message;
+}
+
+$('start-time').addEventListener('change', async () => {
+  const startTime = $('start-time').value;
+  if (/^\d{2}:\d{2}$/.test(startTime)) await save('start-time', { startTime });
+});
+
+function dailyLimitPatch() {
+  const error = checkMinutes($('daily-limit'), LIMITS.dailyLimit, 'The daily limit');
+  showError('daily-limit-error', error);
+  return error ? null : { dailyLimit: Number($('daily-limit').value) };
+}
+$('daily-limit').addEventListener('input', () => {
+  dailyLimitPatch(); // the check shows at once
+  saveSoon('daily-limit', dailyLimitPatch);
+});
+$('daily-limit').addEventListener('change', () => saveNow('daily-limit'));
+
+function durationsPatch() {
+  const error = RATINGS.map((r) => checkMinutes($(`duration-${r}`), LIMITS.duration, 'Each review')).find(Boolean) ?? null;
+  showError('durations-error', error);
+  return error ? null : { durations: Object.fromEntries(RATINGS.map((r) => [r, Number($(`duration-${r}`).value)])) };
+}
+for (const rating of RATINGS) {
+  $(`duration-${rating}`).addEventListener('input', () => {
+    durationsPatch();
+    saveSoon('durations', durationsPatch);
+  });
+  $(`duration-${rating}`).addEventListener('change', () => saveNow('durations'));
+}
+
+// ---- Calendars ---------------------------------------------------------------
+
+const calendarCards = mountCalendarCards($('calendar-cards'), {
+  onRender: () => renderCalendarExtras(),
+  isIdle: () => role === 'idle',
+});
+
+function renderCalendarExtras() {
+  $('calendar-sync-now').hidden = !calendarCards.anyConnected();
+  $('no-calendars').hidden = calendarCards.anyAvailable();
 }
 
 $('calendar-sync-now').addEventListener('click', async () => {
@@ -476,90 +242,150 @@ $('calendar-sync-now').addEventListener('click', async () => {
     ].filter(Boolean);
     setStatus(status, changes.length ? `Up to date (${changes.join(', ')}).` : 'Up to date. Nothing to change.', 'ok');
   } else {
-    setStatus(status, result.error ? `Failed: ${result.error}` : 'Some calendars failed to update; see above.', 'error');
+    setStatus(status, result.error ? `That didn't work: ${sentence(result.error)}` : 'Some calendars failed to update; see above.', 'error');
   }
-});
-
-// ---- Schedule ----------------------------------------------------------------
-
-// True once the user edits the form, so a settings change from elsewhere
-// doesn't overwrite what they're typing.
-let scheduleDirty = false;
-
-function renderSchedule({ force = false } = {}) {
-  const minutes = Number(settings.reminderMinutes);
-  $('reminder-text').textContent = minutes > 0 ? `${plural(minutes, 'minute')} before` : 'at the start';
-  if (scheduleDirty && !force) return;
-  $('start-time').value = settings.startTime;
-  for (const rating of RATINGS) $(`duration-${rating}`).value = settings.durations[rating];
-}
-
-$('schedule-form').addEventListener('input', () => {
-  scheduleDirty = true;
-});
-
-$('schedule-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const status = $('schedule-status');
-  const startTime = $('start-time').value;
-  if (!/^\d{2}:\d{2}$/.test(startTime)) return setStatus(status, 'Pick a start time.', 'error');
-  const durations = {};
-  for (const rating of RATINGS) {
-    const value = Number($(`duration-${rating}`).value);
-    if (!Number.isInteger(value) || value < MIN_DURATION || value > MAX_DURATION) {
-      return setStatus(status, `Block lengths must be whole minutes from ${MIN_DURATION} to ${MAX_DURATION}.`, 'error');
-    }
-    durations[rating] = value;
-  }
-  settings = await updateSettings({ startTime, durations });
-  scheduleDirty = false;
-  renderSchedule({ force: true });
-  const anyCalendar = PROVIDERS.some((p) => calendars[p.name]?.connected);
-  setStatus(status, anyCalendar ? 'Saved. Upcoming blocks will move to match.' : 'Saved.', 'ok');
 });
 
 // ---- Notifications -------------------------------------------------------------
 
+$('daily-summary').addEventListener('change', () => save('daily-summary', { dailySummary: $('daily-summary').checked }));
+
 $('test-notification').addEventListener('click', async () => {
   const status = $('notification-status');
   const result = await send({ type: 'test-notification' });
-  if (result.status !== 'ok') return setStatus(status, `Failed: ${result.error}`, 'error');
-  const what = result.problem ? `the reminder for “${result.problem}” (clicking it opens the problem)` : 'a test notification';
+  if (result.status !== 'ok') return setStatus(status, `That didn't work: ${sentence(result.error ?? 'unknown error')}`, 'error');
+  setStatus(status, 'Sent. If nothing appeared, check that your computer allows notifications from Chrome.', 'ok');
+});
+
+// ---- This computer ---------------------------------------------------------------
+
+function renderComputer() {
+  const idle = role === 'idle';
+  $('idle-banner').hidden = !idle;
+  $('computer-status').textContent = idle
+    ? 'ReLeet is active on another computer. This copy keeps its data but does nothing until you use it here.'
+    : 'This is your main computer: ReLeet checks LeetCode and updates your calendars from here.';
+  $('computer-switch').hidden = !idle || !$('computer-confirm').hidden;
+}
+
+$('use-here').addEventListener('click', () => {
+  $('computer-confirm').hidden = false;
+  renderComputer();
+  $('use-here-confirm').focus();
+});
+$('use-here-cancel').addEventListener('click', () => {
+  $('computer-confirm').hidden = true;
+  renderComputer();
+  $('use-here').focus();
+});
+$('use-here-confirm').addEventListener('click', async () => {
+  await claimMainComputer();
+  $('computer-confirm').hidden = true;
+});
+
+$('export').addEventListener('click', async () => {
+  const status = $('transfer-status');
+  const result = await send({ type: 'export-data' });
+  if (result.status !== 'ok') return setStatus(status, `That didn't work: ${sentence(result.error ?? 'unknown error')}`, 'error');
+  const day = new Date().toISOString().slice(0, 10);
+  const url = URL.createObjectURL(new Blob([JSON.stringify(result.data, null, 2)], { type: 'application/json' }));
+  const link = Object.assign(document.createElement('a'), { href: url, download: `releet-export-${day}.json` });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setStatus(status, `Exported ${plural(Object.keys(result.data.problems).length, 'problem')}.`, 'ok');
+});
+
+$('import').addEventListener('click', () => $('import-file').click());
+
+$('import-file').addEventListener('change', async () => {
+  const status = $('transfer-status');
+  const [file] = $('import-file').files;
+  $('import-file').value = '';
+  if (!file) return;
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch {
+    return setStatus(status, "That file isn't a ReLeet export.", 'error');
+  }
+  const result = await send({ type: 'import-data', data });
+  if (result.status !== 'ok') return setStatus(status, result.error ?? "Couldn't import that file.", 'error');
+  const names = { google: 'Google Calendar', apple: 'Apple Calendar' };
+  const reconnect = (result.calendars ?? []).map((name) => names[name]).join(' and ');
   setStatus(
     status,
-    `Sent ${what}. Nothing was changed. If nothing appeared, check that your system allows notifications from Chrome.`,
+    `Imported ${plural(result.problems, 'problem')} (${result.added} new to this computer).` +
+      (reconnect ? ` Connect ${reconnect} again above to keep using its “ReLeet” calendar.` : ''),
     'ok',
   );
 });
 
+// ---- Privacy and your data ---------------------------------------------------------
+
+async function deleteAll(force) {
+  const status = $('delete-status');
+  setStatus(status, 'Deleting…');
+  const result = await send({ type: 'delete-all-data', force });
+  if (result.status === 'deleted') {
+    $('delete-anyway').hidden = true;
+    const kept = result.kept?.length ? ' A “ReLeet” calendar the other computer may use stays in your account.' : '';
+    const left = result.leftBehind?.length ? ' A “ReLeet” calendar ReLeet couldn\'t delete is still in your account: delete it there.' : '';
+    setStatus(status, `All ReLeet data in this browser is deleted.${kept}${left}`, 'ok');
+    return;
+  }
+  if (result.failed?.length) {
+    const why = result.failed.map((f) => sentence(f.error ?? 'unknown error')).join(' ');
+    $('delete-anyway').hidden = false;
+    setStatus(
+      status,
+      `Nothing was deleted: ReLeet couldn't delete the “ReLeet” calendar. ${why} Try again later, or ` +
+        '“Delete anyway” to leave the calendar in your account.',
+      'error',
+    );
+    return;
+  }
+  setStatus(status, `That didn't work: ${sentence(result.error ?? 'unknown error')}`, 'error');
+}
+
+$('delete-all').addEventListener('click', () => {
+  // Kept as a dialog: this can't be undone.
+  const calendars =
+    role === 'idle'
+      ? 'ReLeet is active on another computer. A “ReLeet” calendar stays in your account unless that computer ' +
+        'already has its own. Then this deletes'
+      : 'This deletes the “ReLeet” calendars from your connected accounts, then';
+  const ok = confirm(
+    `Delete all your ReLeet data?\n\n${calendars} every problem, rating and setting in this browser. ` +
+      "It can't be undone. Export first if you want a copy.",
+  );
+  if (ok) deleteAll(false);
+});
+$('delete-anyway').addEventListener('click', () => deleteAll(true));
+
 // ---- Start ---------------------------------------------------------------------
+
+function renderAll() {
+  renderLeetCode();
+  renderSchedule();
+  $('daily-summary').checked = Boolean(settings.dailySummary);
+  renderCalendarExtras();
+  renderComputer();
+}
 
 onSettingsChanged((next) => {
   settings = next;
-  renderLeetCode();
-  renderSchedule();
+  renderAll();
 });
 onLeetCodeStateChanged((next) => {
   leetcode = next;
   renderLeetCode();
 });
-onCalendarsChanged((next) => {
-  const prev = calendars;
-  calendars = next;
-  let changed = false;
-  for (const { name } of PROVIDERS) {
-    const state = next[name];
-    // Connect saved the connection: sign-in is over, the first update is running.
-    if (ui[name].signingIn && state?.connected && !state.needsReconnect) {
-      Object.assign(ui[name], { signingIn: false, message: 'Connected. Adding your upcoming reviews to the calendar…' });
-      changed = true;
-    }
-    if (JSON.stringify(visibleState(state)) !== JSON.stringify(visibleState(prev[name]))) changed = true;
-  }
-  if (changed) renderCalendars();
+onRoleChanged((next) => {
+  role = next;
+  renderComputer();
 });
 
-[settings, leetcode, calendars] = await Promise.all([getSettings(), getLeetCodeState(), getCalendars()]);
-renderLeetCode();
-renderCalendars();
-renderSchedule({ force: true });
+[settings, leetcode, role] = await Promise.all([getSettings(), getLeetCodeState(), computerRole()]);
+renderAll();

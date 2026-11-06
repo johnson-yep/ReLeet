@@ -1,8 +1,9 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { installFakeChrome } from './helpers/fake-chrome.js';
+import { installFakeChrome, installFakeIndexedDB } from './helpers/fake-chrome.js';
 
 const chrome = installFakeChrome();
+installFakeIndexedDB();
 const storage = await import('../lib/storage.js');
 const schedule = await import('../lib/schedule.js');
 const { recordReview } = await import('../lib/srs.js');
@@ -42,8 +43,8 @@ async function until(check) {
 
 // One fake account per provider: calendars (id → Map(eventId → slot)) and a
 // call log. `before(op, ...args)` runs before every call; throw or return a
-// promise from it to make that call fail or wait. `reuseByName`: like Outlook
-// and iCloud, ensureCalendar without a usable id picks up an existing calendar.
+// promise from it to make that call fail or wait. `reuseByName`: like iCloud,
+// ensureCalendar without a usable id picks up an existing calendar.
 function fakeAccount(name) {
   const account = {
     calendars: new Map(),
@@ -147,7 +148,8 @@ function makeSync({ isConfigured = () => true, updateCalendarState = storage.upd
 }
 
 beforeEach(() => {
-  chrome.reset();
+  // A whole day, so these sync tests aren't split by the daily limit (see schedule.test.js).
+  chrome.reset({ settings: { dailyLimit: 24 * 60 } });
   clock = at(0, 8);
   accounts = Object.fromEntries(PROVIDER_NAMES.map((name) => [name, fakeAccount(name)]));
   counts = { plan: 0, saveSchedule: 0, makeProvider: [], signOut: [] };
@@ -173,13 +175,13 @@ function assertInSync(name) {
 
 // Connect
 
-test('first connect creates an event for every upcoming review, none for overdue ones', async () => {
+test('first connect creates an event for every review, an overdue one booked again today', async () => {
   const sync = makeSync();
   await setProblems(
     problem('two-sum', 'easy', 1),
     problem('lru-cache', 'hard', 1),
-    problem('jump-game', 'medium', 3),
-    problem('overdue', 'medium', -2),
+    problem('jump-game', 'okay', 3),
+    problem('overdue', 'okay', -2),
   );
 
   const res = await sync.connectCalendar('google');
@@ -192,45 +194,28 @@ test('first connect creates an event for every upcoming review, none for overdue
   assert.equal(state.lastError, null);
   assert.equal(state.needsReconnect, false);
   assert.equal(state.lastSyncAt, clock);
-  assert.deepEqual(Object.keys(state.events).sort(), ['jump-game', 'lru-cache', 'two-sum']);
+  assert.deepEqual(Object.keys(state.events).sort(), ['jump-game', 'lru-cache', 'overdue', 'two-sum']);
+  assert.equal(state.events.overdue.start, at(0, 9));
   assert.equal(accounts.google.calendars.size, 1);
-  assert.equal(accounts.google.events().size, 3);
+  assert.equal(accounts.google.events().size, 4);
   assertInSync('google');
   // Same day → back to back.
   assert.equal(state.events['two-sum'].start, state.events['lru-cache'].end);
 });
 
-test('connect stores Apple credentials (trimmed) and tokens a provider set during sign-in', async () => {
+test('connect stores Apple credentials (trimmed)', async () => {
   const sync = makeSync();
   await setProblems(problem('two-sum', 'easy', 1));
-  accounts.outlook.makeProvider = async (state, { interactive }) => {
-    if (interactive) state.auth = { accessToken: 'a1', refreshToken: 'r1', expiresAt: 1, account: 'me@outlook.test' };
-    return accounts.outlook.provider;
-  };
 
   assert.equal(
     (await sync.connectCalendar('apple', { appleId: ' me@icloud.com ', appPassword: ' abcd-efgh ' })).status,
     'connected',
   );
-  assert.equal((await sync.connectCalendar('outlook')).status, 'connected');
 
   assert.deepEqual(counts.makeProvider[0].state.auth, { appleId: 'me@icloud.com', appPassword: 'abcd-efgh' });
   assert.deepEqual(stored('apple').auth, { appleId: 'me@icloud.com', appPassword: 'abcd-efgh' });
-  assert.equal(stored('outlook').auth.refreshToken, 'r1');
   assert.equal(stored('google'), undefined);
   assert.equal(accounts.apple.events().size, 1);
-  assert.equal(accounts.outlook.events().size, 1);
-});
-
-test('a provider can persist new tokens during a sync through updateState', async () => {
-  const sync = makeSync();
-  accounts.outlook.makeProvider = async (state, { interactive, updateState }) => {
-    if (interactive) state.auth = { refreshToken: 'r1' };
-    else await updateState((prev) => ({ ...prev, auth: { refreshToken: 'r2' } }));
-    return accounts.outlook.provider;
-  };
-  await sync.connectCalendar('outlook');
-  assert.equal(stored('outlook').auth.refreshToken, 'r2');
 });
 
 test('connect failure (sign-in or calendar creation) leaves no state behind', async () => {
@@ -245,18 +230,17 @@ test('connect failure (sign-in or calendar creation) leaves no state behind', as
     error: "Google sign-in didn't complete.",
   });
 
-  // Tokens from a sign-in that worked aren't kept when the calendar can't be made.
-  accounts.outlook.makeProvider = async (state) => {
-    state.auth = { accessToken: 'a1', refreshToken: 'r1' };
-    return accounts.outlook.provider;
+  // A password that worked isn't kept when the calendar can't be made.
+  accounts.apple.before = (op) => {
+    if (op === 'ensureCalendar') throw new CalendarError("Couldn't reach iCloud.");
   };
-  accounts.outlook.before = (op) => {
-    if (op === 'ensureCalendar') throw new CalendarError("Couldn't reach Outlook.");
-  };
-  assert.deepEqual(await sync.connectCalendar('outlook'), { status: 'error', error: "Couldn't reach Outlook." });
+  assert.deepEqual(await sync.connectCalendar('apple', { appleId: 'me@icloud.com', appPassword: 'x' }), {
+    status: 'error',
+    error: "Couldn't reach iCloud.",
+  });
 
   assert.deepEqual(chrome.dump().calendars ?? {}, {});
-  assert.equal(accounts.google.events().size + accounts.outlook.events().size, 0);
+  assert.equal(accounts.google.events().size + accounts.apple.events().size, 0);
 });
 
 test('a failed reconnect leaves the previous connection exactly as it was', async () => {
@@ -275,7 +259,7 @@ test('a failed reconnect leaves the previous connection exactly as it was', asyn
 
 test('reconnecting keeps the calendar and its events, so nothing is duplicated', async () => {
   const sync = makeSync();
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   await sync.connectCalendar('google');
   const before = stored('google');
   await storage.updateCalendarState('google', (s) => ({ ...s, needsReconnect: true, lastError: 'expired' }));
@@ -291,13 +275,13 @@ test('reconnecting keeps the calendar and its events, so nothing is duplicated',
   assert.equal(accounts.google.calendars.size, 1);
 });
 
-for (const name of ['outlook', 'apple', 'google']) {
+for (const name of ['apple', 'google']) {
   test(`reconnecting ${name} after "Disconnect anyway" picks up the calendar it left, without doubling events`, async () => {
     const sync = makeSync();
-    // Outlook and iCloud find an existing "ReLeet" calendar by name; Google can't.
+    // iCloud finds an existing "ReLeet" calendar by name; Google can't.
     accounts[name].reuseByName = name !== 'google';
     const credentials = name === 'apple' ? { appleId: 'me@icloud.com', appPassword: 'x' } : undefined;
-    await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2), problem('c', 'hard', 3));
+    await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2), problem('c', 'hard', 3));
     await sync.connectCalendar(name, credentials);
     const before = stored(name);
 
@@ -321,27 +305,27 @@ for (const name of ['outlook', 'apple', 'google']) {
 
 test('a "ReLeet" calendar found again without a stored map gets its upcoming events replaced, not doubled', async () => {
   const sync = makeSync();
-  accounts.outlook.reuseByName = true;
-  const problems = [problem('a', 'easy', 0), problem('b', 'medium', 1), problem('c', 'hard', 2)];
+  accounts.apple.reuseByName = true;
+  const problems = [problem('a', 'easy', 0), problem('b', 'okay', 1), problem('c', 'hard', 2)];
   await setProblems(...problems);
-  await sync.connectCalendar('outlook');
-  const calendarId = stored('outlook').calendarId;
+  await sync.connectCalendar('apple');
+  const calendarId = stored('apple').calendarId;
   // A finished review from last week is history.
-  accounts.outlook.calendars.get(calendarId).set('history', { problemId: 'a', start: at(-7, 9), end: at(-7, 9, 20) });
+  accounts.apple.calendars.get(calendarId).set('history', { problemId: 'a', start: at(-7, 9), end: at(-7, 9, 20) });
 
   // Reinstalled at 09:10, while a's 09:00 block runs: storage is gone, the calendar isn't.
   clock = at(0, 9, 10);
   chrome.reset();
   await setProblems(...problems);
-  accounts.outlook.calls = [];
-  assert.equal((await sync.connectCalendar('outlook')).status, 'connected');
+  accounts.apple.calls = [];
+  assert.equal((await sync.connectCalendar('apple')).status, 'connected');
 
-  assert.equal(stored('outlook').calendarId, calendarId);
-  assert.equal(accounts.outlook.calendars.size, 1);
-  assert.equal(accounts.outlook.ops('deleteEvent').length, 3); // a (running), b, c
-  assert.equal(accounts.outlook.events().size, 4); // history + one block per problem
-  assert.ok(accounts.outlook.events().has('history'));
-  assertInSync('outlook');
+  assert.equal(stored('apple').calendarId, calendarId);
+  assert.equal(accounts.apple.calendars.size, 1);
+  assert.equal(accounts.apple.ops('deleteEvent').length, 3); // a (running), b, c
+  assert.equal(accounts.apple.events().size, 4); // history + one block per problem
+  assert.ok(accounts.apple.events().has('history'));
+  assertInSync('apple');
 });
 
 test('a calendar left behind that can no longer be opened does not block connecting again', async () => {
@@ -390,18 +374,17 @@ test('a calendar connected later leaves a block another calendar holds where it 
   await sync.connectCalendar('google'); // 09:00
   clock = at(0, 15);
   accounts.google.calls = [];
-  await sync.connectCalendar('outlook');
+  await sync.connectCalendar('apple');
   assert.equal(chrome.dump().schedule.entries['lru-cache'].start, at(0, 9));
   assert.equal(accounts.google.ops('updateEvent').length, 0);
-  assert.equal(accounts.outlook.ops('createEvent').length, 0); // already over
+  assert.equal(accounts.apple.ops('createEvent').length, 0); // already over
 });
 
 test('an unconfigured provider explains what is missing and never signs in', async () => {
   const sync = makeSync({ isConfigured: (name) => name === 'apple' });
   const res = await sync.connectCalendar('google');
   assert.equal(res.status, 'unconfigured');
-  assert.match(res.error, /manifest\.json.*SETUP\.md/);
-  assert.match((await sync.connectCalendar('outlook')).error, /config\.js/);
+  assert.match(res.error, /Google Calendar isn't available/);
   assert.equal(counts.makeProvider.length, 0);
   assert.equal(sync.isProviderConfigured('google'), false);
   assert.equal(sync.isProviderConfigured('apple'), true);
@@ -414,11 +397,11 @@ test('an unconfigured provider explains what is missing and never signs in', asy
 test('re-rating moves the event in place', async () => {
   const sync = makeSync();
   const p = problem('two-sum', 'easy', 3);
-  await setProblems(p, problem('jump-game', 'medium', 2));
+  await setProblems(p, problem('jump-game', 'okay', 2));
   await sync.connectCalendar('google');
   const before = stored('google').events['two-sum'];
 
-  await setProblems({ ...p, rating: 'hard', dueAt: at(1) }, problem('jump-game', 'medium', 2));
+  await setProblems({ ...p, rating: 'hard', dueAt: at(1) }, problem('jump-game', 'okay', 2));
   const res = await sync.syncCalendars();
 
   assert.equal(res.status, 'ok');
@@ -432,11 +415,11 @@ test('re-rating moves the event in place', async () => {
 
 test('deleting a problem deletes its event', async () => {
   const sync = makeSync();
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   await sync.connectCalendar('google');
   const ref = stored('google').events['jump-game'];
 
-  await storage.deleteProblem('jump-game');
+  await storage.updateEntry('jump-game', () => ({ problem: null, pending: null }));
   const res = await sync.syncCalendars();
 
   assert.deepEqual(res.results.google, { created: 0, updated: 0, removed: 1, forgotten: 0, error: null });
@@ -454,13 +437,13 @@ test('a finished review leaves its started event as history and creates the next
   assert.equal(old.start, at(0, 9));
 
   clock = at(0, 9, 10); // the block has started; the review is done
-  await setProblems(recordReview(p, 'medium', { at: clock }));
+  await setProblems(recordReview(p, 'okay', { at: clock }));
   const res = await sync.syncCalendars();
 
   assert.deepEqual(res.results.google, { created: 1, updated: 0, removed: 0, forgotten: 1, error: null });
   const next = stored('google').events['two-sum'];
   assert.notEqual(next.id, old.id);
-  assert.equal(next.day, schedule.dayKey(at(3)));
+  assert.equal(next.day, schedule.dayKey(at(5))); // 3-day interval × 1.5 for Okay
   // The old event stays on the calendar untouched.
   assert.equal(accounts.google.events().get(old.id).start, at(0, 9));
   assert.equal(accounts.google.events().size, 2);
@@ -486,12 +469,12 @@ test('an event deleted in the calendar app is recreated when it needs an update'
 
 test('a calendar deleted mid-sync is recreated once with every event', async () => {
   const sync = makeSync();
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   await sync.connectCalendar('google');
   const oldCalendar = stored('google').calendarId;
 
   // The user deletes the calendar right after ensureCalendar said it exists.
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2), problem('lru-cache', 'hard', 3));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2), problem('lru-cache', 'hard', 3));
   accounts.google.before = (op) => {
     if (op === 'createEvent') {
       accounts.google.calendars.delete(oldCalendar);
@@ -517,7 +500,7 @@ test('a calendar that keeps going missing is retried only once, then reported', 
   const sync = makeSync();
   await setProblems(problem('two-sum', 'easy', 1));
   await sync.connectCalendar('google');
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
 
   accounts.google.before = (op) => {
     if (op === 'createEvent') throw new CalendarError('The ReLeet calendar is gone.', { calendarMissing: true });
@@ -534,31 +517,31 @@ test('a calendar that keeps going missing is retried only once, then reported', 
 
 test('a stray "calendar gone" answer for a calendar that still exists keeps its events', async () => {
   const sync = makeSync();
-  accounts.outlook.reuseByName = true;
-  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2));
-  await sync.connectCalendar('outlook');
-  const calendarId = stored('outlook').calendarId;
+  accounts.apple.reuseByName = true;
+  await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2));
+  await sync.connectCalendar('apple');
+  const calendarId = stored('apple').calendarId;
 
-  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2), problem('c', 'hard', 3));
+  await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2), problem('c', 'hard', 3));
   let once = true;
-  accounts.outlook.before = (op) => {
+  accounts.apple.before = (op) => {
     if (op === 'createEvent' && once) {
       once = false;
-      throw new CalendarError('The ReLeet calendar is gone from Outlook.', { calendarMissing: true });
+      throw new CalendarError('The ReLeet calendar is gone from iCloud.', { calendarMissing: true });
     }
   };
   const res = await sync.syncCalendars();
 
-  assert.deepEqual(res.results.outlook, { created: 1, updated: 0, removed: 0, forgotten: 0, error: null });
-  assert.equal(stored('outlook').calendarId, calendarId);
-  assert.equal(accounts.outlook.calendars.size, 1);
-  assert.equal(accounts.outlook.events().size, 3);
-  assertInSync('outlook');
+  assert.deepEqual(res.results.apple, { created: 1, updated: 0, removed: 0, forgotten: 0, error: null });
+  assert.equal(stored('apple').calendarId, calendarId);
+  assert.equal(accounts.apple.calendars.size, 1);
+  assert.equal(accounts.apple.events().size, 3);
+  assertInSync('apple');
 });
 
 test('an event whose create answer was lost is deleted before the next sync creates it again', async () => {
   const sync = makeSync();
-  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2));
+  await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2));
   await sync.connectCalendar('google');
   const real = accounts.google.provider;
   accounts.google.makeProvider = async () => ({
@@ -568,7 +551,7 @@ test('an event whose create answer was lost is deleted before the next sync crea
       throw new CalendarError("Google Calendar didn't respond in time."); // …but the answer never came
     },
   });
-  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2), problem('c', 'hard', 3));
+  await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2), problem('c', 'hard', 3));
   assert.equal((await sync.syncCalendars()).results.google.error, "Google Calendar didn't respond in time.");
   assert.equal(stored('google').checkStrays, true);
   assert.equal(accounts.google.events().size, 3);
@@ -590,26 +573,26 @@ test('an event whose create answer was lost is deleted before the next sync crea
 test('a calendar that was failing while a block moved catches up, even after the old time passed', async () => {
   const sync = makeSync();
   clock = at(0, 7);
-  await setProblems(problem('a', 'medium', 0), problem('b', 'easy', 0));
+  await setProblems(problem('a', 'okay', 0), problem('b', 'easy', 0));
   await sync.connectCalendar('google');
-  await sync.connectCalendar('outlook');
-  assert.equal(stored('outlook').events.a.start, at(0, 9));
+  await sync.connectCalendar('apple');
+  assert.equal(stored('apple').events.a.start, at(0, 9));
 
-  // 07:05: the start time moves to 13:00 and b is deleted while Outlook is signed out.
+  // 07:05: the start time moves to 13:00 and b is deleted while iCloud is signed out.
   clock = at(0, 7, 5);
-  accounts.outlook.signedIn = false;
+  accounts.apple.signedIn = false;
   await storage.updateSettings({ startTime: '13:00' });
-  await setProblems(problem('a', 'medium', 0));
+  await setProblems(problem('a', 'okay', 0));
   await sync.syncCalendars();
   assert.equal(stored('google').events.a.start, at(0, 13));
 
-  // 10:00: Outlook is back. Its 09:00 event had "started", but it's the stale one.
+  // 10:00: iCloud is back. Its 09:00 event had "started", but it's the stale one.
   clock = at(0, 10);
-  accounts.outlook.signedIn = true;
+  accounts.apple.signedIn = true;
   const res = await sync.syncCalendars();
-  assert.equal(res.results.outlook.updated, 1);
-  assert.equal(accounts.outlook.events().get(stored('outlook').events.a.id).start, at(0, 13));
-  assertInSync('outlook');
+  assert.equal(res.results.apple.updated, 1);
+  assert.equal(accounts.apple.events().get(stored('apple').events.a.id).start, at(0, 13));
+  assertInSync('apple');
 });
 
 test('a sign-in error marks only that provider for reconnect; the others keep syncing', async () => {
@@ -621,7 +604,7 @@ test('a sign-in error marks only that provider for reconnect; the others keep sy
 
   clock += 60 * 1000;
   accounts.google.signedIn = false;
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   const res = await sync.syncCalendars();
 
   assert.equal(res.status, 'error');
@@ -647,14 +630,14 @@ test('a sign-in error marks only that provider for reconnect; the others keep sy
 test('one provider throwing inside an op does not stop another provider', async () => {
   const sync = makeSync();
   await sync.connectCalendar('google');
-  await sync.connectCalendar('outlook');
+  await sync.connectCalendar('apple');
   accounts.google.before = (op) => {
     if (op === 'createEvent') throw new Error('boom');
   };
   await setProblems(problem('two-sum', 'easy', 1));
   const res = await sync.syncCalendars();
   assert.equal(res.results.google.error, 'boom');
-  assert.equal(res.results.outlook.created, 1);
+  assert.equal(res.results.apple.created, 1);
 });
 
 test('every applied op is stored at once, so a stopped run resumes without duplicates', async () => {
@@ -699,7 +682,7 @@ test('calls during a run share one rerun, which sees the changes made meanwhile'
   const first = sync.syncCalendars();
   await until(() => accounts.google.calls.length === 1);
 
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   const second = sync.syncCalendars();
   const third = sync.syncCalendars();
   assert.equal(second, third);
@@ -719,7 +702,7 @@ test('calls during a run share one rerun, which sees the changes made meanwhile'
 
 test('the schedule is saved only when the plan changed', async () => {
   const sync = makeSync();
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   let writes = 0;
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.schedule) writes++;
@@ -734,7 +717,7 @@ test('the schedule is saved only when the plan changed', async () => {
   await sync.syncCalendars();
   assert.equal(counts.saveSchedule, 1);
 
-  await setProblems(problem('two-sum', 'hard', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'hard', 1), problem('jump-game', 'okay', 2));
   await sync.syncCalendars();
   assert.equal(counts.saveSchedule, 2);
   assert.equal(writes, 2);
@@ -803,20 +786,20 @@ test('disconnect keeps the connection when the calendar cannot be deleted, unles
 
 test('disconnect with sign-in gone needs force; disconnecting nothing is fine', async () => {
   const sync = makeSync();
-  await sync.connectCalendar('outlook');
-  accounts.outlook.signedIn = false;
-  assert.deepEqual(await sync.disconnectCalendar('outlook'), {
+  await sync.connectCalendar('apple');
+  accounts.apple.signedIn = false;
+  assert.deepEqual(await sync.disconnectCalendar('apple'), {
     status: 'error',
     error: 'Sign-in expired. Reconnect in Settings.',
     reconnect: true,
   });
   // Settings now offers Reconnect, after which Disconnect can delete the calendar.
-  assert.equal(stored('outlook').needsReconnect, true);
-  assert.equal(stored('outlook').connected, true);
-  assert.equal(stored('outlook').disconnecting, undefined);
-  assert.equal((await sync.disconnectCalendar('outlook', { force: true })).status, 'disconnected');
-  assert.equal(stored('outlook').connected, false);
-  assert.equal(stored('outlook').auth, undefined);
+  assert.equal(stored('apple').needsReconnect, true);
+  assert.equal(stored('apple').connected, true);
+  assert.equal(stored('apple').disconnecting, undefined);
+  assert.equal((await sync.disconnectCalendar('apple', { force: true })).status, 'disconnected');
+  assert.equal(stored('apple').connected, false);
+  assert.equal(stored('apple').auth, undefined);
 
   counts.makeProvider = [];
   assert.deepEqual(await sync.disconnectCalendar('apple'), { status: 'disconnected' });
@@ -869,14 +852,13 @@ test('a sync that finishes after a disconnect does not bring the provider back',
 });
 
 // Real wiring (chrome glue). The fake manifest has the placeholder Google client
-// ID and config.js has no Outlook client ID, so only Apple is usable.
+// ID, so only Apple is usable.
 
 test('the chrome-wired instance reports configuration and syncs with nothing connected', async () => {
   assert.equal(calendarSync.isProviderConfigured('google'), false);
-  assert.equal(calendarSync.isProviderConfigured('outlook'), false);
   assert.equal(calendarSync.isProviderConfigured('apple'), true);
   assert.equal((await calendarSync.connectCalendar('google')).status, 'unconfigured');
-  assert.equal((await calendarSync.connectCalendar('outlook')).status, 'unconfigured');
+  assert.equal((await calendarSync.connectCalendar('apple')).status, 'error');
   assert.deepEqual(await calendarSync.syncCalendars(), { status: 'ok', plan: { entries: 0 }, results: {} });
 });
 
@@ -953,6 +935,11 @@ test('the chrome-wired instance connects, syncs and disconnects Apple over CalDA
     const ref = state.events['two-sum'];
     assert.ok(ref.id.startsWith(state.calendarId) && ref.id.endsWith('.ics'));
     assert.equal(ref.etag, '"1"');
+    // The app-specific password is stored encrypted, and the next sync can still use it.
+    assert.equal(state.auth.appleId, 'me@icloud.com');
+    assert.doesNotMatch(JSON.stringify(state.auth), /app-pass/);
+    assert.equal(typeof state.auth.appPassword.data, 'string');
+    assert.equal((await calendarSync.syncCalendars()).results.apple.error, null);
     assert.match(server.resources.get(new URL(ref.id).pathname), /SUMMARY:Review: two-sum/);
     assert.equal(state.lastError, null);
 
@@ -963,4 +950,79 @@ test('the chrome-wired instance connects, syncs and disconnects Apple over CalDA
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test('without the iCloud permission, Apple asks to be reconnected instead of failing on the network', async () => {
+  const realFetch = globalThis.fetch;
+  const server = fakeCalDav();
+  globalThis.fetch = server.fetch;
+  chrome.permissions = { contains: async ({ origins }) => !origins.some((o) => o.includes('icloud')) };
+  try {
+    const res = await calendarSync.connectCalendar('apple', { appleId: 'me@icloud.com', appPassword: 'app-pass' });
+    assert.deepEqual(res, { status: 'error', error: 'ReLeet needs your permission to reach iCloud.' });
+    assert.deepEqual(server.requests, []);
+  } finally {
+    delete chrome.permissions;
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('forgetting a calendar on a computer that is not the main one deletes nothing and revokes nothing', async () => {
+  const sync = makeSync();
+  await setProblems(problem('two-sum', 'easy', 1));
+  await sync.connectCalendar('apple', { appleId: 'me@icloud.com', appPassword: 'x' });
+  const before = stored('apple');
+  accounts.apple.calls = [];
+  assert.deepEqual(await sync.forgetCalendar('apple'), { status: 'disconnected', keptCalendar: true });
+  assert.deepEqual(accounts.apple.calls, []);
+  assert.deepEqual(counts.signOut, []);
+  assert.equal(accounts.apple.calendars.size, 1);
+  assert.deepEqual(stored('apple'), {
+    connected: false,
+    calendarId: before.calendarId,
+    events: before.events,
+    checkStrays: true,
+    account: 'me@apple.test',
+    auth: { appleId: 'me@icloud.com' },
+  });
+  assert.deepEqual(await sync.forgetCalendar('google'), { status: 'disconnected', keptCalendar: false });
+});
+
+test('adopting imported calendars leaves a connected one alone', async () => {
+  const sync = makeSync();
+  await sync.connectCalendar('google');
+  const google = stored('google');
+  const imported = { connected: false, calendarId: 'imported', events: {}, checkStrays: false, account: null };
+  await sync.adoptCalendars({ google: imported, apple: { ...imported, auth: { appleId: 'me@icloud.com' } }, yahoo: imported });
+  assert.deepEqual(stored('google'), google);
+  assert.equal(stored('apple').calendarId, 'imported');
+  assert.equal(stored('yahoo'), undefined);
+});
+
+test('after being idle, a sync removes events it does not know and puts back the ones it does', async () => {
+  const sync = makeSync();
+  await setProblems(problem('two-sum', 'easy', 1), problem('lru-cache', 'hard', 2), problem('jump-game', 'okay', 3));
+  await sync.connectCalendar('google');
+  const calendarId = stored('google').calendarId;
+  const events = accounts.google.calendars.get(calendarId);
+  // While this computer was idle, another one with the same calendar:
+  events.set('theirs', { problemId: 'two-sum', start: at(1, 9), end: at(1, 9, 20) }); // added a block
+  events.delete(stored('google').events['lru-cache'].id); // deleted one this computer knows
+  const moved = stored('google').events['jump-game'].id;
+  events.set(moved, { ...events.get(moved), start: at(3, 15), end: at(3, 15, 40) }); // moved another
+  await sync.markCalendarsStale();
+  assert.equal(stored('google').checkStrays, true);
+  await sync.syncCalendars();
+  assert.equal(events.has('theirs'), false);
+  assert.equal(events.size, 3);
+  assertInSync('google');
+  assert.equal(stored('google').checkStrays, false);
+});
+
+test('disconnecting while keeping the sign-in deletes the calendar but signs nothing out', async () => {
+  const sync = makeSync();
+  await sync.connectCalendar('google');
+  assert.equal((await sync.disconnectCalendar('google', { keepSignIn: true })).status, 'disconnected');
+  assert.equal(accounts.google.calendars.size, 0);
+  assert.deepEqual(counts.signOut, []);
 });

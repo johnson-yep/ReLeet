@@ -1,140 +1,46 @@
-:root {
-  --bg: #ffffff;
-  --fg: #1c1d1f;
-  --muted: #6b6f76;
-  --border: #e4e5e7;
-  --card: #f7f7f8;
-  --easy: #1f9d55;
-  --medium: #d08700;
-  --hard: #e5484d;
-  /* Text in the rating colors. The tones above are too light for small text
-     (WCAG AA needs 4.5:1) on white and on cards; they stay for borders and
-     tints. Same values as the in-page prompt (content/leetcode.js). */
-  --easy-text: #177a42;
-  --medium-text: #945f00;
-  --hard-text: #c5282e;
-  --accent: #3b6ef5;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #18191b;
-    --fg: #ececee;
-    --muted: #9a9ea6;
-    --border: #2e3035;
-    --card: #222326;
-    --easy-text: #25a95c;
-    --medium-text: var(--medium);
-    --hard-text: #f5676b;
-    --accent: #7096ff;
-  }
-}
-
-* { box-sizing: border-box; }
-
 body {
   width: 380px;
-  margin: 0;
   padding: 12px 14px 14px;
-  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
-  background: var(--bg);
-  color: var(--fg);
 }
+
+/* The popup opened in a tab (see background.js openPopup). */
+body.in-tab { margin: 24px auto; }
 
 header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 2px;
 }
-
 h1 { font-size: 16px; margin: 0; }
 h2 {
   font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--muted);
   margin: 14px 0 6px;
 }
 
-.muted { color: var(--muted); font-size: 12px; }
-.empty { color: var(--muted); margin: 4px 0; font-style: italic; }
-.error { color: var(--hard-text); margin: 6px 0 0; }
-
-.problem-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-
-.problem {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.problem-main { display: flex; flex-direction: column; min-width: 0; }
-.problem-title {
-  color: var(--fg);
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.problem-title:hover { color: var(--accent); text-decoration: underline; }
-
-.problem-actions { display: flex; gap: 4px; flex-shrink: 0; }
-
-button {
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
+.icon-btn {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 6px;
   border-radius: 6px;
-  padding: 3px 7px;
 }
-button:hover { border-color: var(--muted); }
+.icon-btn:hover:not(:disabled) { color: var(--fg); background: var(--card); }
 
-.rating.easy { color: var(--easy-text); }
-.rating.medium { color: var(--medium-text); }
-.rating.hard { color: var(--hard-text); }
-.icon-btn { color: var(--muted); padding: 3px 6px; }
+.stats { margin: 0 0 8px; font-size: 12px; }
+.small { font-size: 12px; }
+.button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.notice p { margin: 0; }
+.notice p + p, .notice p + .button-row { margin-top: 8px; }
 
-input[type="text"], input[type="password"] {
-  width: 100%;
-  font: inherit;
-  padding: 7px 9px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
-}
-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-.section-head { display: flex; align-items: baseline; justify-content: space-between; }
-#pending-list .problem { border-color: var(--accent); }
-
-.link-btn { border: none; background: none; color: var(--accent); padding: 0 0 0 8px; }
-.link-btn:hover { text-decoration: underline; }
-.link-btn:disabled { color: var(--muted); cursor: default; text-decoration: none; }
-
-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-  margin-top: 14px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-footer .error { font-size: 12px; margin: 0; }
-.footer-status { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
-.footer-actions { flex-shrink: 0; white-space: nowrap; }
-
+/* Banners: a calendar that needs the user, LeetCode not connected. */
 .banner {
   display: flex;
   align-items: baseline;
@@ -142,15 +48,121 @@ footer .error { font-size: 12px; margin: 0; }
   gap: 8px;
   margin: 0 0 8px;
   padding: 6px 10px;
-  border: 1px solid var(--medium);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--medium) 12%, var(--bg));
+  border: 1px solid var(--okay);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--okay) 12%, var(--bg));
   font-size: 12px;
 }
-.banner .link-btn { flex-shrink: 0; white-space: nowrap; }
+.banner .btn-link { flex-shrink: 0; white-space: nowrap; }
 
-/* The popup opened in a tab (see background.js openPendingList). */
-body.in-tab { margin: 24px auto; }
+/* Rows. The single grid column keeps long titles from pushing buttons off-screen. */
+.problem-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.row {
+  position: relative;
+  padding: 7px 8px 7px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.row.waiting { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.row-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+.title {
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.title:hover { color: var(--accent); }
+.status { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.status.overdue { color: var(--hard-text); }
+.row .ratings { margin-top: 6px; }
+.row .rate { font-size: 12px; }
+.menu-btn { font-size: 14px; padding: 0 6px; letter-spacing: 1px; }
 
-.rating-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
-.rating-row button { padding: 6px; font-weight: 600; }
+.menu {
+  position: absolute;
+  right: 6px;
+  top: calc(100% - 4px);
+  z-index: 2;
+  min-width: 170px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  display: grid;
+}
+.menu button {
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 5px;
+}
+.menu button:hover, .menu button:focus-visible { background: var(--card); }
+.menu .danger { color: var(--hard-text); }
+
+/* Upcoming, by day. */
+.day + .day { margin-top: 10px; }
+.day-head { margin: 0 0 4px; font-size: 12px; font-weight: 600; }
+.day-head .muted { font-weight: 400; }
+
+details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 14px 0 6px;
+  list-style: none;
+}
+details > summary::-webkit-details-marker { display: none; }
+details#mastered > summary::before { content: "▸ "; }
+details#mastered[open] > summary::before { content: "▾ "; }
+details#add > summary { color: var(--accent); }
+#add-form { display: grid; gap: 6px; }
+#add-form p { margin: 2px 0 0; }
+#add-form input { width: 100%; }
+
+footer {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+#leetcode-status { min-width: 0; overflow-wrap: anywhere; }
+
+.toast {
+  position: sticky;
+  bottom: 0;
+  margin-top: 10px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--fg);
+  color: var(--bg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+}
+.toast .btn-link { color: var(--bg); font-weight: 600; text-decoration: underline; }
+.toast-actions { display: flex; gap: 12px; flex-shrink: 0; }

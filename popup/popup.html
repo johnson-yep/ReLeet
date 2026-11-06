@@ -3,69 +3,91 @@
 <head>
   <meta charset="utf-8">
   <title>ReLeet</title>
+  <link rel="stylesheet" href="../lib/ui.css">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <header>
     <h1>ReLeet</h1>
-    <span id="summary" class="muted"></span>
+    <button id="open-settings" type="button" class="icon-btn" aria-label="Settings" title="Settings">⚙</button>
   </header>
 
-  <div id="calendar-warnings"></div>
-
-  <section id="pending-section" hidden>
-    <div class="section-head">
-      <h2>Rate new submissions</h2>
-      <button id="dismiss-all" type="button" class="link-btn">Dismiss all</button>
+  <!-- On a computer that isn't the main one, this is all the popup shows. -->
+  <section id="idle" class="card notice" hidden>
+    <p><strong>ReLeet is active on another computer.</strong> Reviews and calendar updates happen there.</p>
+    <div id="idle-ask">
+      <button id="use-here" type="button">Use this computer instead</button>
     </div>
-    <ul id="pending-list" class="problem-list"></ul>
-  </section>
-
-  <section>
-    <h2>Due today</h2>
-    <ul id="due-list" class="problem-list"></ul>
-    <p id="due-empty" class="empty">Nothing due. Nice.</p>
-  </section>
-
-  <section>
-    <h2>Upcoming</h2>
-    <ul id="upcoming-list" class="problem-list"></ul>
-    <p id="upcoming-empty" class="empty">No upcoming reviews.</p>
-  </section>
-
-  <section>
-    <h2>Add a solved problem</h2>
-    <form id="add-form">
-      <input id="problem-input" type="text" placeholder="Title, slug, or LeetCode URL" required autocomplete="off">
-      <div class="rating-row" role="group" aria-label="How hard did it feel?">
-        <button type="submit" name="rating" value="easy" class="rating easy">Easy · 7d</button>
-        <button type="submit" name="rating" value="medium" class="rating medium">Medium · 3d</button>
-        <button type="submit" name="rating" value="hard" class="rating hard">Hard · 1d</button>
+    <div id="idle-confirm" hidden>
+      <p>The other computer stops checking LeetCode and updating your calendars. To bring your problems here,
+        export them in its Settings and import them here.</p>
+      <div class="button-row">
+        <button id="use-here-confirm" type="button" class="btn-primary">Use this computer</button>
+        <button id="use-here-cancel" type="button">Cancel</button>
       </div>
-      <p id="form-error" class="error" hidden></p>
-    </form>
+    </div>
   </section>
 
-  <footer>
-    <div class="footer-status">
-      <span id="sync-status" class="muted"></span>
-      <span id="calendar-status" class="muted" hidden></span>
-    </div>
-    <span class="footer-actions">
-      <button id="sync-now" type="button" class="link-btn" hidden>Check now</button>
-      <button id="open-settings" type="button" class="link-btn">Settings</button>
-    </span>
+  <main id="main" hidden>
+    <p id="stats" class="stats muted"></p>
+    <div id="banners"></div>
+
+    <section id="empty" class="card notice" hidden>
+      <p><strong>Solve a problem on LeetCode and ReLeet will ask how it felt.</strong></p>
+      <div class="button-row">
+        <a class="button-like btn-primary" href="https://leetcode.com/problemset/" target="_blank" rel="noopener">Open LeetCode</a>
+        <button id="empty-import" type="button">Import recent solves</button>
+      </div>
+      <p id="empty-status" class="muted" role="status"></p>
+    </section>
+
+    <section id="to-rate" hidden>
+      <h2 id="to-rate-title"></h2>
+      <ul class="problem-list" aria-labelledby="to-rate-title"></ul>
+    </section>
+
+    <section id="due" hidden>
+      <h2 id="due-title"></h2>
+      <ul class="problem-list" aria-labelledby="due-title"></ul>
+    </section>
+
+    <section id="upcoming" hidden>
+      <h2>Upcoming</h2>
+      <div id="upcoming-days"></div>
+      <button id="show-all" type="button" class="btn-link" hidden></button>
+    </section>
+
+    <details id="mastered" hidden>
+      <summary id="mastered-title"></summary>
+      <ul class="problem-list" aria-labelledby="mastered-title"></ul>
+    </details>
+
+    <details id="add">
+      <summary>+ Add a problem</summary>
+      <form id="add-form">
+        <label for="problem-input" class="sr-only">LeetCode link, problem name or slug</label>
+        <input id="problem-input" type="text" placeholder="LeetCode link, problem name or slug" required autocomplete="off">
+        <p class="muted small">How hard did it feel?</p>
+        <div class="ratings" role="group" aria-label="How hard did it feel?">
+          <button type="submit" name="rating" value="easy" class="rate easy">Easy <span class="days">· 7d</span></button>
+          <button type="submit" name="rating" value="okay" class="rate okay">Okay <span class="days">· 3d</span></button>
+          <button type="submit" name="rating" value="hard" class="rate hard">Hard <span class="days">· 1d</span></button>
+        </div>
+        <p id="add-error" class="error" role="alert" hidden></p>
+      </form>
+    </details>
+  </main>
+
+  <footer id="footer" hidden>
+    <span id="leetcode-status" class="muted"></span>
+    <button id="sync-now" type="button" class="btn-link" hidden>Check now</button>
   </footer>
 
-  <template id="problem-template">
-    <li class="problem">
-      <div class="problem-main">
-        <a class="problem-title" target="_blank" rel="noopener"></a>
-        <span class="problem-meta muted"></span>
-      </div>
-      <div class="problem-actions"></div>
-    </li>
-  </template>
+  <!-- About ten seconds after a rating, Mastered or Stop tracking. -->
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+    <span id="toast-text"></span>
+    <span class="toast-actions"></span>
+  </div>
 
   <script type="module" src="popup.js"></script>
 </body>

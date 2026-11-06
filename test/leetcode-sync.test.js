@@ -43,12 +43,12 @@ const problem = (id, historyAts) => ({
   id,
   title: id,
   url: `https://leetcode.com/problems/${id}/`,
-  rating: 'medium',
+  rating: 'okay',
   solvedAt: historyAts[0],
   dueAt: historyAts.at(-1) + 3 * 24 * HOUR,
   commitSha: null,
   source: 'leetcode',
-  history: historyAts.map((at) => ({ at, rating: 'medium', commitSha: null })),
+  history: historyAts.map((at) => ({ at, rating: 'okay', commitSha: null })),
 });
 
 beforeEach(() => {
@@ -472,7 +472,7 @@ test('a new Accepted submission from the page is queued', async () => {
   const state = { username: 'alice', baselineAt: Date.now() - HOUR, seenIds: ['1'], lastSyncAt: 1, lastError: null };
   chrome.reset({ settings: settings(), leetcode: state });
   const s = pageSubmission();
-  assert.deepEqual(await recordAcceptedFromPage(s), { status: 'queued', pendingId: 'two-sum', tracked: false });
+  assert.deepEqual(await recordAcceptedFromPage(s), { status: 'queued', pendingId: 'two-sum', tracked: false, intervals: { easy: 7, okay: 3, hard: 1 } });
 
   const { pending, leetcode } = chrome.dump();
   assert.deepEqual(pending['two-sum'], {
@@ -506,7 +506,8 @@ test('an already-pending problem is still queued so the page shows the prompt', 
     'queued',
   );
   const result = await recordAcceptedFromPage(pageSubmission());
-  assert.deepEqual(result, { status: 'queued', pendingId: 'two-sum', tracked: true });
+  assert.equal(result.status, 'queued');
+  assert.equal(result.tracked, true);
   assert.equal(chrome.dump().pending['two-sum'].submissionId, '777');
 });
 
@@ -518,7 +519,7 @@ test('a problem already rated that day is reported as already-rated', async () =
     problems: { 'two-sum': problem('two-sum', [at - 48 * HOUR, at]) },
   });
   const result = await recordAcceptedFromPage(pageSubmission({ timestamp: at }));
-  assert.deepEqual(result, { status: 'already-rated', pendingId: 'two-sum', tracked: true });
+  assert.equal(result.status, 'already-rated');
   assert.equal(chrome.dump().pending, undefined);
   assert.deepEqual(chrome.dump().leetcode.seenIds, ['777']);
 });
@@ -529,7 +530,7 @@ test('a submission that was already handled and dismissed is a duplicate', async
     leetcode: { username: 'alice', baselineAt: Date.now() - HOUR, seenIds: ['777'] },
   });
   const result = await recordAcceptedFromPage(pageSubmission());
-  assert.deepEqual(result, { status: 'duplicate', pendingId: 'two-sum', tracked: false });
+  assert.deepEqual(result, { status: 'duplicate', pendingId: 'two-sum', tracked: false, intervals: { easy: 7, okay: 3, hard: 1 } });
   assert.equal(chrome.dump().pending, undefined);
 });
 

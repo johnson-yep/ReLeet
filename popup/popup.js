@@ -1,302 +1,499 @@
 import {
-  getProblems,
-  updateProblemMap,
-  deleteProblem,
-  getPending,
-  dismissPending,
-  getSettings,
-  getLeetCodeState,
-  getSchedule,
   getCalendars,
-  onProblemsChanged,
-  onPendingChanged,
-  onSettingsChanged,
-  onLeetCodeStateChanged,
-  onScheduleChanged,
+  getLeetCodeState,
+  getPendingMap,
+  getProblemMap,
+  getSchedule,
+  getSettings,
   onCalendarsChanged,
+  onLeetCodeStateChanged,
+  onPendingChanged,
+  onProblemsChanged,
+  onScheduleChanged,
+  onSettingsChanged,
 } from '../lib/storage.js';
-import {
-  applySolve,
-  recordReview,
-  groupByDue,
-  startOfDay,
-  dayStartMs,
-  reviewDay,
-  RATINGS,
-} from '../lib/srs.js';
+import { RATINGS } from '../lib/srs.js';
+import { popupView } from '../lib/views.js';
+import { addSolved, master, ratePending, rateReview, resume, stopTracking, undo } from '../lib/actions.js';
+import { claimMainComputer, computerRole, onRoleChanged } from '../lib/computer.js';
+import { createLeetCodeClient } from '../lib/leetcode.js';
 import { parseProblemInput } from '../lib/problem.js';
-import { createReviewInvite, slotForProblem } from '../lib/calendar.js';
-import { ratePending } from '../lib/rating.js';
+import { createReviewInvite } from '../lib/calendar.js';
+import {
+  dayName,
+  formatDate,
+  formatTime,
+  minutesText,
+  overdueText,
+  plural,
+  ratingLabel,
+  reviewWhen,
+  timeAgo,
+} from '../lib/format.js';
 
 const $ = (id) => document.getElementById(id);
 // Opened in a tab (a notification click when Chrome couldn't show the popup).
 if (new URLSearchParams(location.search).has('tab')) document.body.classList.add('in-tab');
-const template = $('problem-template');
-const DAY_MS = 24 * 60 * 60 * 1000;
-const CALENDAR_NAMES = { google: 'Google', outlook: 'Outlook', apple: 'Apple' };
-const CALENDAR_FULL_NAMES = { google: 'Google Calendar', outlook: 'Outlook', apple: 'iCloud Calendar' };
 
-let problems = [];
-let pending = [];
-let settings = null;
-let leetcode = {};
-let schedule = { layoutKey: null, entries: {} };
-let calendars = {};
+const TOAST_MS = 10 * 1000;
+const CALENDAR_NAMES = { google: 'Google Calendar', apple: 'Apple Calendar' };
 
-function label(rating) {
-  return rating[0].toUpperCase() + rating.slice(1);
+const state = {
+  role: null,
+  problems: {},
+  pending: {},
+  settings: null,
+  leetcode: {},
+  schedule: null,
+  calendars: {},
+  openMenu: null, // problem id whose ⋯ menu is open
+  showAll: false,
+};
+
+// Small DOM builder. Text always goes in as text nodes, never as HTML.
+function h(tag, props = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (value == null || value === false) continue;
+    if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
+    else if (key === 'class') el.className = value;
+    else el.setAttribute(key, value === true ? '' : value);
+  }
+  el.append(...children.flat().filter((c) => c != null && c !== false));
+  return el;
 }
 
-function daysFromToday(ms) {
-  return Math.round((startOfDay(ms) - startOfDay(Date.now())) / DAY_MS);
-}
+const connectedCalendars = () => Object.keys(CALENDAR_NAMES).filter((name) => state.calendars[name]?.connected);
+const openSettings = () => chrome.runtime.openOptionsPage();
 
-// Local midnight of the problem's review day, for dates shown in the list.
-const reviewDate = (problem) => dayStartMs(reviewDay(problem));
+// ---- Rows --------------------------------------------------------------------
 
-function relativeDay(problem) {
-  const days = daysFromToday(reviewDate(problem));
-  if (days < -1) return `${-days} days overdue`;
-  if (days === -1) return 'overdue since yesterday';
-  if (days === 0) return 'today';
-  if (days === 1) return 'tomorrow';
-  return `in ${days} days`;
-}
-
-function formatDate(ms) {
-  return new Date(ms).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-}
-
-function formatTime(ms) {
-  return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-}
-
-function timeAgo(ms) {
-  const minutes = Math.round((Date.now() - ms) / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  return hours < 24 ? `${hours} h ago` : formatDate(ms);
-}
-
-// `action` names what the button does, so focus can find it again after a re-render.
-function button(text, className, onClick, title, action = null) {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.textContent = text;
-  b.className = className;
-  if (title) b.title = title;
-  if (action) b.dataset.action = action;
-  b.addEventListener('click', onClick);
-  return b;
-}
-
-function problemItem({ id, title, url }, meta, actions) {
-  const li = template.content.firstElementChild.cloneNode(true);
-  li.dataset.id = id;
-  const link = li.querySelector('.problem-title');
-  link.textContent = title;
-  link.href = url;
-  li.querySelector('.problem-meta').textContent = meta;
-  li.querySelector('.problem-actions').append(...actions);
-  return li;
-}
-
-function ratingButtons(onRate, verb) {
-  return RATINGS.map((rating) =>
-    button(label(rating)[0], `rating ${rating}`, () => onRate(rating), `${verb} — felt ${rating}`, rating),
+function ratingButtons(title, intervals, onRate) {
+  return h(
+    'div',
+    { class: 'ratings', role: 'group', 'aria-label': `Rate ${title}` },
+    RATINGS.map((rating) =>
+      h(
+        'button',
+        {
+          type: 'button',
+          class: `rate ${rating}`,
+          'data-action': `rate-${rating}`,
+          'aria-label': `Rate ${title}: ${ratingLabel(rating)}, next review in ${plural(intervals[rating].days, 'day')}`,
+          onclick: () => onRate(rating),
+        },
+        ratingLabel(rating),
+        h('span', { class: 'days' }, ` · ${intervals[rating].days}d`),
+      ),
+    ),
   );
 }
 
-const connectedCalendars = () => Object.keys(CALENDAR_NAMES).filter((name) => calendars[name]?.connected);
+// item: { id, title, url, tooltip, status, statusClass, ratings, menu: [{ label, action, run, danger }], button }
+function row(item) {
+  const menuOpen = state.openMenu === item.id;
+  const menuButton = item.menu?.length
+    ? h(
+        'button',
+        {
+          type: 'button',
+          class: 'icon-btn menu-btn',
+          'data-action': 'menu',
+          'aria-label': `More for ${item.title}`,
+          'aria-haspopup': 'menu',
+          'aria-expanded': String(menuOpen),
+          onclick: (event) => {
+            event.stopPropagation();
+            state.openMenu = menuOpen ? null : item.id;
+            render();
+            if (!menuOpen) document.querySelector(`li[data-id="${CSS.escape(item.id)}"] .menu button`)?.focus();
+          },
+        },
+        '⋯',
+      )
+    : null;
+  const menu = menuOpen
+    ? h(
+        'div',
+        { class: 'menu', role: 'menu', 'aria-label': `More for ${item.title}` },
+        item.menu.map((entry) =>
+          h(
+            'button',
+            {
+              type: 'button',
+              role: 'menuitem',
+              class: entry.danger ? 'danger' : null,
+              'data-action': entry.action,
+              onclick: () => {
+                state.openMenu = null;
+                render();
+                entry.run();
+              },
+            },
+            entry.label,
+          ),
+        ),
+      )
+    : null;
 
-// The planned block, if it's still ahead (or today). An overdue review's block
-// is history, so its time isn't shown.
-function plannedBlock(problem) {
-  const slot = schedule.entries?.[problem.id];
-  return slot && daysFromToday(slot.start) >= 0 ? slot : null;
+  return h(
+    'li',
+    { class: `row${item.waiting ? ' waiting' : ''}`, 'data-id': item.id },
+    h(
+      'div',
+      { class: 'row-main' },
+      h('a', { class: 'title', href: item.url, target: '_blank', rel: 'noopener', title: item.tooltip }, item.title),
+      h('span', { class: `status${item.statusClass ? ` ${item.statusClass}` : ''}` }, item.status),
+      item.button ?? menuButton,
+    ),
+    item.ratings,
+    menu,
+  );
 }
 
-function renderPendingItem(s) {
-  const tracked = problems.some((p) => p.id === s.id);
-  const meta = [
-    s.submittedAt ? `submitted ${formatDate(s.submittedAt)}` : 'imported',
-    s.topic, // only on rows left over from v0.2's NeetCode / GitHub sync
-    tracked ? 'counts as a review' : null,
-  ].filter(Boolean).join(' · ');
-  return problemItem(s, meta, [
-    ...ratingButtons((rating) => ratePending(s.id, rating), 'Rate'),
-    button('✕', 'icon-btn', () => dismissPending([s.id]), 'Dismiss without tracking', 'dismiss'),
-  ]);
+// "Two Sum · solved Nov 2 · 3 reviews", for the title's tooltip.
+function tooltip(problem, title) {
+  if (!problem) return title;
+  const reviews = Math.max(0, (problem.history?.length ?? 1) - 1);
+  return `${title} · solved ${formatDate(problem.solvedAt)}${reviews ? ` · ${plural(reviews, 'review')}` : ''}`;
 }
 
-function renderProblem(problem, isDueToday) {
-  const reviews = (problem.history?.length ?? 1) - 1;
-  const block = plannedBlock(problem);
-  const meta =
-    `${label(problem.rating)} · solved ${formatDate(problem.solvedAt)} · due ${relativeDay(problem)}` +
-    (block ? ` · ${formatTime(block.start)}` : '') +
-    (reviews ? ` · ${reviews} review${reviews > 1 ? 's' : ''}` : '');
-
-  // Rating a due problem counts as completing the review and reschedules it.
-  const actions = isDueToday ? ratingButtons((rating) => review(problem.id, rating), 'Reviewed') : [];
+function trackedMenu(problem, slot) {
+  const items = [{ label: 'Mark mastered', action: 'master', run: () => markMastered(problem) }];
   // A connected calendar already gets the block; the download is for everyone else.
-  if (!connectedCalendars().length) {
-    actions.push(
-      button(
-        '📅',
-        'icon-btn',
-        () => downloadCalendarInvite(problem),
-        `Add review on ${formatDate(reviewDate(problem))} to a calendar`,
-        'download',
-      ),
-    );
+  if (slot && !connectedCalendars().length) {
+    items.push({ label: 'Add to calendar (.ics)', action: 'download', run: () => downloadInvite(slot) });
   }
-  actions.push(button('✕', 'icon-btn', () => remove(problem), 'Delete', 'delete'));
-
-  const li = problemItem(problem, meta, actions);
-  li.title = `Review date: ${formatDate(reviewDate(problem))}` + (block ? ` at ${formatTime(block.start)}` : '');
-  return li;
+  items.push({ label: 'Stop tracking', action: 'stop', danger: true, run: () => stop(problem.id, problem.title) });
+  return items;
 }
 
-function downloadCalendarInvite(problem) {
-  const slot = schedule.entries?.[problem.id] ?? slotForProblem(problem, settings);
-  if (!slot) return;
+function toRateRow({ solve, problem, intervals }) {
+  const solved = solve.submittedAt ? `solved ${timeAgo(solve.submittedAt)}` : 'imported';
+  return row({
+    id: solve.id,
+    title: solve.title,
+    url: solve.url,
+    tooltip: problem ? `${tooltip(problem, solve.title)} · this solve counts as a review` : solve.title,
+    status: solved,
+    waiting: true,
+    ratings: ratingButtons(solve.title, intervals, (rating) => rateSolve(solve, rating)),
+    menu: [
+      { label: 'Mark mastered', action: 'master', run: () => markMastered({ id: solve.id, title: solve.title }) },
+      { label: 'Stop tracking', action: 'stop', danger: true, run: () => stop(solve.id, solve.title) },
+    ],
+  });
+}
+
+function dueRow({ slot, problem, intervals }) {
+  const overdue = Boolean(slot.overdueSince);
+  return row({
+    id: problem.id,
+    title: problem.title,
+    url: problem.url,
+    tooltip: tooltip(problem, problem.title),
+    status: overdue ? overdueText(slot.overdueSince) : `Today · ${formatTime(slot.start)}`,
+    statusClass: overdue ? 'overdue' : null,
+    ratings: ratingButtons(problem.title, intervals, (rating) => rateDue(problem, rating)),
+    menu: trackedMenu(problem, slot),
+  });
+}
+
+function upcomingRow({ slot, problem }) {
+  return row({
+    id: problem.id,
+    title: problem.title,
+    url: problem.url,
+    tooltip: tooltip(problem, problem.title),
+    status: formatTime(slot.start),
+    menu: trackedMenu(problem, slot),
+  });
+}
+
+function masteredRow(problem) {
+  return row({
+    id: problem.id,
+    title: problem.title,
+    url: problem.url,
+    tooltip: tooltip(problem, problem.title),
+    status: `since ${formatDate(problem.masteredAt)}`,
+    button: h(
+      'button',
+      {
+        type: 'button',
+        class: 'btn-link',
+        'data-action': 'resume',
+        'aria-label': `Resume reviewing ${problem.title}`,
+        onclick: () => resumeReviews(problem),
+      },
+      'Resume',
+    ),
+  });
+}
+
+// ---- Render ------------------------------------------------------------------
+
+// The lists are rebuilt on every change, which drops keyboard focus. Remember
+// the focused control by problem and action, and focus its replacement.
+function focusedControl() {
+  const el = document.activeElement;
+  const li = el?.closest?.('li[data-id]');
+  return li && el.dataset.action ? { id: li.dataset.id, action: el.dataset.action } : null;
+}
+
+function refocus(key) {
+  if (!key || document.activeElement !== document.body) return;
+  const li = document.querySelector(`li[data-id="${CSS.escape(key.id)}"]`);
+  li?.querySelector(`[data-action="${key.action}"]`)?.focus();
+}
+
+function view() {
+  return popupView(state);
+}
+
+function renderStats(stats) {
+  const parts = [`${stats.tracked} tracked`, `${stats.dueToday} due today`];
+  if (stats.mastered) parts.push(`${stats.mastered} mastered`);
+  if (stats.streak) parts.push(`${stats.streak}-day streak`);
+  $('stats').textContent = parts.join(' · ');
+}
+
+function renderBanners() {
+  const banners = connectedCalendars()
+    .filter((name) => state.calendars[name].needsReconnect || state.calendars[name].lastError)
+    .map((name) => {
+      const calendar = state.calendars[name];
+      const text = calendar.needsReconnect
+        ? `${CALENDAR_NAMES[name]} needs you to sign in again.`
+        : `Couldn't update ${CALENDAR_NAMES[name]}. Retrying every 15 minutes.`;
+      return h(
+        'p',
+        { class: 'banner', role: 'status' },
+        h('span', {}, text),
+        h('button', { type: 'button', class: 'btn-link', onclick: openSettings }, calendar.needsReconnect ? 'Reconnect' : 'Details'),
+      );
+    });
+  $('banners').replaceChildren(...banners);
+}
+
+function renderList(section, items, makeRow, title) {
+  $(section).hidden = items.length === 0;
+  if (title) $(`${section}-title`).textContent = title;
+  $(section).querySelector('.problem-list').replaceChildren(...items.map(makeRow));
+}
+
+function renderUpcoming(groups, count) {
+  const shown = state.showAll ? groups : groups.filter((g) => g.soon);
+  $('upcoming').hidden = groups.length === 0;
+  $('upcoming-days').replaceChildren(
+    ...shown.map((group) =>
+      h(
+        'div',
+        { class: 'day' },
+        h(
+          'p',
+          { class: 'day-head', id: `day-${group.day}` },
+          dayName(group.day),
+          h('span', { class: 'muted' }, ` · ${plural(group.items.length, 'review')} · ${minutesText(group.minutes)}`),
+        ),
+        h('ul', { class: 'problem-list', 'aria-labelledby': `day-${group.day}` }, group.items.map(upcomingRow)),
+      ),
+    ),
+  );
+  const hidden = groups.length - shown.length;
+  $('show-all').hidden = hidden === 0;
+  $('show-all').textContent = `Show all (${count})`;
+}
+
+function renderLeetCodeStatus() {
+  const username = String(state.settings?.leetcodeUsername ?? '').trim();
+  const status = $('leetcode-status');
+  $('sync-now').hidden = !username;
+  if (!username) {
+    status.className = '';
+    status.replaceChildren(
+      h('a', { href: 'https://leetcode.com/accounts/login/', target: '_blank', rel: 'noopener' }, 'LeetCode not connected'),
+      h('span', { class: 'muted' }, ': sign in on leetcode.com'),
+    );
+  } else if (state.leetcode.lastError && state.leetcode.username === username) {
+    status.className = 'error';
+    status.textContent = String(state.leetcode.lastError);
+  } else {
+    const { lastSyncAt } = state.leetcode;
+    const checked = state.leetcode.username === username && lastSyncAt ? timeAgo(lastSyncAt) : 'not yet';
+    status.className = 'muted';
+    status.textContent = `@${username} · checked ${checked}`;
+  }
+}
+
+function render() {
+  const idle = state.role === 'idle';
+  $('idle').hidden = !idle;
+  $('main').hidden = idle;
+  $('footer').hidden = idle;
+  if (idle) return;
+
+  const focused = focusedControl();
+  const v = view();
+  renderStats(v.stats);
+  $('stats').hidden = v.empty;
+  renderBanners();
+  $('empty').hidden = !v.empty;
+  renderList('to-rate', v.toRate, toRateRow, `To rate (${v.toRate.length})`);
+  renderList('due', v.due.items, dueRow, `Due today (${v.due.items.length} · ${minutesText(v.due.minutes)})`);
+  renderUpcoming(v.upcoming, v.upcomingCount);
+  $('mastered').hidden = v.mastered.length === 0;
+  $('mastered-title').textContent = `Mastered (${v.mastered.length})`;
+  $('mastered').querySelector('.problem-list').replaceChildren(...v.mastered.map(masteredRow));
+  renderLeetCodeStatus();
+  refocus(focused);
+}
+
+// ---- Toast with Undo ---------------------------------------------------------
+
+let toastTimer = null;
+
+// parts: [text, bold?][]; actions: [{ label, run }]
+function toast(parts, actions = []) {
+  clearTimeout(toastTimer);
+  $('toast-text').replaceChildren(...parts.map(([text, bold]) => (bold ? h('strong', {}, text) : text)));
+  $('toast').querySelector('.toast-actions').replaceChildren(
+    ...actions.map(({ label, run }) =>
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'btn-link',
+          onclick: () => {
+            hideToast();
+            run();
+          },
+        },
+        label,
+      ),
+    ),
+  );
+  $('toast').hidden = false;
+  toastTimer = setTimeout(hideToast, TOAST_MS);
+}
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  $('toast').hidden = true;
+}
+
+function undoAction(id, change) {
+  return {
+    label: 'Undo',
+    run: async () => {
+      if (!(await undo(id, change))) toast([["Couldn't undo: it changed since.", false]]);
+    },
+  };
+}
+
+async function reload() {
+  [state.problems, state.pending, state.schedule] = await Promise.all([getProblemMap(), getPendingMap(), getSchedule()]);
+}
+
+// "Saved: Okay. Next review Mon, Nov 9 at 9:00 AM." and, at the longest
+// interval, an offer to mark it mastered.
+async function confirmRating(id, title, rating, change) {
+  if (!change) return;
+  await reload();
+  const slot = view().plan.entries[id];
+  const parts = [[`Saved: ${ratingLabel(rating)}.`, true]];
+  if (slot) parts.push([` Next review ${reviewWhen(slot.day, slot.start)}.`, false]);
+  const actions = [undoAction(id, change)];
+  if (change.capped) {
+    parts.push([" That's the longest interval.", false]);
+    actions.unshift({ label: 'Mark mastered', run: () => markMastered({ id, title }) });
+  }
+  toast(parts, actions);
+}
+
+async function rateSolve(solve, rating) {
+  await confirmRating(solve.id, solve.title, rating, await ratePending(solve.id, rating));
+}
+
+async function rateDue(problem, rating) {
+  const change = await rateReview(problem.id, rating, { seen: problem.history?.length ?? 0 });
+  await confirmRating(problem.id, problem.title, rating, change);
+}
+
+async function markMastered({ id, title }) {
+  const change = await master(id);
+  if (change) toast([[`${title}`, true], [' is mastered. No more reviews.', false]], [undoAction(id, change)]);
+}
+
+async function stop(id, title) {
+  const change = await stopTracking(id);
+  if (change) toast([['Stopped tracking ', false], [title, true], ['.', false]], [undoAction(id, change)]);
+}
+
+async function resumeReviews(problem) {
+  const change = await resume(problem.id);
+  if (!change) return;
+  await reload();
+  const slot = view().plan.entries[problem.id];
+  toast(
+    [[problem.title, true], [slot ? ` is back. Next review ${reviewWhen(slot.day, slot.start)}.` : ' is back.', false]],
+    [undoAction(problem.id, change)],
+  );
+}
+
+function downloadInvite(slot) {
   const { contents, filename } = createReviewInvite(slot);
   const url = URL.createObjectURL(new Blob([contents], { type: 'text/calendar;charset=utf-8' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
+  const link = h('a', { href: url, download: filename });
   document.body.append(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function renderList(listEl, emptyEl, items, renderItem) {
-  listEl.replaceChildren(...items.map(renderItem));
-  if (emptyEl) emptyEl.hidden = items.length > 0;
-}
+// ---- Add a problem -----------------------------------------------------------
 
-// The lists are rebuilt on every change, which drops keyboard focus. Remember
-// the focused button by list, problem and action, and focus its replacement.
-function focusedRowButton() {
-  const el = document.activeElement;
-  const li = el?.closest?.('li[data-id]');
-  return li && el.dataset.action ? { list: li.parentElement.id, id: li.dataset.id, action: el.dataset.action } : null;
-}
-
-function refocus(key) {
-  if (!key || document.activeElement !== document.body) return;
-  const row = [...$(key.list).children].find((li) => li.dataset.id === key.id);
-  row?.querySelector(`button[data-action="${key.action}"]`)?.focus();
-}
-
-function render() {
-  const focused = focusedRowButton();
-  const { dueToday, upcoming } = groupByDue(problems);
-  const newestFirst = [...pending].sort((a, b) => (b.submittedAt ?? 0) - (a.submittedAt ?? 0));
-  $('pending-section').hidden = pending.length === 0;
-  $('dismiss-all').hidden = pending.length < 2;
-  renderList($('pending-list'), null, newestFirst, renderPendingItem);
-  renderList($('due-list'), $('due-empty'), dueToday, (p) => renderProblem(p, true));
-  renderList($('upcoming-list'), $('upcoming-empty'), upcoming, (p) => renderProblem(p, false));
-  $('summary').textContent = `${dueToday.length} due · ${problems.length} tracked`;
-  refocus(focused);
-}
-
-function setStatus(el, text, className = 'muted') {
-  el.textContent = text;
-  el.className = className;
-}
-
-function renderLeetCodeStatus() {
-  const username = String(settings?.leetcodeUsername ?? '').trim();
-  const status = $('sync-status');
-  $('sync-now').hidden = !username;
-  if (!username) {
-    setStatus(status, 'LeetCode not connected: open leetcode.com while signed in');
-  } else if (leetcode.lastError) {
-    // LeetCode's own messages already say "LeetCode".
-    const error = String(leetcode.lastError);
-    setStatus(status, /leetcode/i.test(error) ? error : `LeetCode: ${error}`, 'error');
-  } else {
-    const checked = leetcode.username === username && leetcode.lastSyncAt ? timeAgo(leetcode.lastSyncAt) : 'never';
-    setStatus(status, `@${username} · checked ${checked}`);
+// LeetCode's own title ("LRU Cache" for lru-cache). Offline or unknown: the
+// title made from the input.
+async function lookUpTitle(parsed) {
+  if (!/leetcode\.com/.test(parsed.url)) return parsed.title;
+  try {
+    return (await createLeetCodeClient().questionTitle(parsed.id)) ?? parsed.title;
+  } catch {
+    return parsed.title;
   }
-}
-
-function openSettings() {
-  chrome.runtime.openOptionsPage();
-}
-
-const sentence = (text) => (/[.!?]$/.test(text) ? text : `${text}.`);
-
-function calendarWarning(name, state) {
-  const p = document.createElement('p');
-  p.className = 'banner';
-  const text = document.createElement('span');
-  const calendar = CALENDAR_FULL_NAMES[name];
-  // A sign-in problem needs the user; anything else (offline, server trouble)
-  // retries on its own. Error messages give the cause only; the next step is added here.
-  if (state.needsReconnect) {
-    text.textContent = state.lastError
-      ? `${calendar}: ${sentence(String(state.lastError))}`
-      : `${calendar} needs you to sign in again.`;
-  } else {
-    text.textContent = `Couldn't update ${calendar}: ${sentence(String(state.lastError))} Retrying every 15 minutes.`;
-  }
-  p.append(text, button(state.needsReconnect ? 'Reconnect' : 'Settings', 'link-btn', openSettings));
-  return p;
-}
-
-function renderCalendarStatus() {
-  const names = connectedCalendars();
-  const status = $('calendar-status');
-  status.hidden = names.length === 0;
-  status.textContent = `Calendar: ${names.map((name) => CALENDAR_NAMES[name]).join(', ')}`;
-  const failing = names.filter((name) => calendars[name].needsReconnect || calendars[name].lastError);
-  $('calendar-warnings').replaceChildren(...failing.map((name) => calendarWarning(name, calendars[name])));
-}
-
-// Read and write under one lock, so a rating saved from the leetcode.com
-// prompt at the same moment isn't overwritten.
-function review(id, rating) {
-  return updateProblemMap((map) => {
-    if (!map[id]) return null;
-    map[id] = recordReview(map[id], rating);
-    return map;
-  });
-}
-
-async function remove(problem) {
-  if (confirm(`Stop tracking "${problem.title}"?`)) await deleteProblem(problem.id);
 }
 
 $('add-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const error = $('form-error');
+  const error = $('add-error');
   const rating = event.submitter?.value;
   const parsed = parseProblemInput($('problem-input').value);
   if (!parsed) {
-    error.textContent = 'Enter a problem title, slug, or LeetCode URL.';
+    error.textContent = 'Enter a LeetCode link, a problem name or a slug.';
     error.hidden = false;
     return;
   }
   error.hidden = true;
-
-  // Re-adding a tracked problem counts as another review rather than a reset.
-  await updateProblemMap((map) => {
-    map[parsed.id] = applySolve(map[parsed.id] ?? null, parsed, rating);
-    return map;
-  });
-  $('problem-input').value = '';
+  const buttons = [...$('add-form').querySelectorAll('button')];
+  for (const b of buttons) b.disabled = true;
+  try {
+    const title = await lookUpTitle(parsed);
+    const change = await addSolved({ ...parsed, title }, rating);
+    $('problem-input').value = '';
+    await confirmRating(parsed.id, title, rating, change);
+  } finally {
+    for (const b of buttons) b.disabled = false;
+  }
 });
 
-$('dismiss-all').addEventListener('click', () => {
-  if (confirm(`Dismiss all ${pending.length} submissions without tracking them?`)) {
-    dismissPending(pending.map((s) => s.id));
-  }
+// ---- Other controls ----------------------------------------------------------
+
+$('open-settings').addEventListener('click', openSettings);
+
+$('show-all').addEventListener('click', () => {
+  state.showAll = true;
+  render();
 });
 
 $('sync-now').addEventListener('click', async () => {
@@ -313,31 +510,70 @@ $('sync-now').addEventListener('click', async () => {
   }
 });
 
-$('open-settings').addEventListener('click', openSettings);
-
-onProblemsChanged((list) => { problems = list; render(); });
-onPendingChanged((list) => { pending = list; render(); });
-onScheduleChanged((next) => { schedule = next; render(); });
-onSettingsChanged((next) => { settings = next; renderLeetCodeStatus(); });
-onLeetCodeStateChanged((next) => { leetcode = next; renderLeetCodeStatus(); });
-// A sync saves the calendars key after every event it writes. The lists only
-// care which calendars are connected (for 📅), so most saves skip them.
-onCalendarsChanged((next) => {
-  const before = connectedCalendars().join();
-  calendars = next;
-  renderCalendarStatus();
-  if (connectedCalendars().join() !== before) render();
+$('empty-import').addEventListener('click', async () => {
+  const status = $('empty-status');
+  status.textContent = 'Importing…';
+  const result = await chrome.runtime.sendMessage({ type: 'import-recent' }).catch(() => null);
+  if (result?.status === 'ok') {
+    status.textContent = result.added ? '' : 'Nothing to import: no recent accepted solves.';
+  } else if (result?.status === 'unconfigured') {
+    status.textContent = 'Sign in on leetcode.com first, then try again.';
+  } else {
+    status.textContent = result?.error ?? "Couldn't import. Try again.";
+  }
 });
 
-[problems, pending, settings, leetcode, schedule, calendars] = await Promise.all([
-  getProblems(),
-  getPending(),
-  getSettings(),
-  getLeetCodeState(),
-  getSchedule(),
-  getCalendars(),
-]);
+$('use-here').addEventListener('click', () => {
+  $('idle-ask').hidden = true;
+  $('idle-confirm').hidden = false;
+  $('use-here-confirm').focus();
+});
+$('use-here-cancel').addEventListener('click', () => {
+  $('idle-confirm').hidden = true;
+  $('idle-ask').hidden = false;
+  $('use-here').focus();
+});
+$('use-here-confirm').addEventListener('click', () => claimMainComputer());
+
+// A click anywhere else, or Escape, closes an open ⋯ menu.
+document.addEventListener('click', (event) => {
+  if (state.openMenu && !event.target.closest?.('.menu')) {
+    state.openMenu = null;
+    render();
+  }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !state.openMenu) return;
+  const id = state.openMenu;
+  state.openMenu = null;
+  render();
+  document.querySelector(`li[data-id="${CSS.escape(id)}"] [data-action="menu"]`)?.focus();
+  event.preventDefault();
+});
+
+// ---- Start -------------------------------------------------------------------
+
+const update = (key) => (value) => {
+  state[key] = value;
+  render();
+};
+onProblemsChanged((list) => update('problems')(Object.fromEntries(list.map((p) => [p.id, p]))));
+onPendingChanged((list) => update('pending')(Object.fromEntries(list.map((s) => [s.id, s]))));
+onScheduleChanged(update('schedule'));
+onSettingsChanged(update('settings'));
+onLeetCodeStateChanged(update('leetcode'));
+onCalendarsChanged(update('calendars'));
+onRoleChanged(update('role'));
+
+[state.role, state.problems, state.pending, state.settings, state.leetcode, state.schedule, state.calendars] =
+  await Promise.all([
+    computerRole(),
+    getProblemMap(),
+    getPendingMap(),
+    getSettings(),
+    getLeetCodeState(),
+    getSchedule(),
+    getCalendars(),
+  ]);
 render();
-renderLeetCodeStatus();
-renderCalendarStatus();
-chrome.runtime.sendMessage({ type: 'sync-if-stale' }).catch(() => {}); // results arrive via storage listeners
+if (state.role !== 'idle') chrome.runtime.sendMessage({ type: 'sync-if-stale' }).catch(() => {}); // results arrive via storage listeners

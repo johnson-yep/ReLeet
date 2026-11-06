@@ -26,7 +26,10 @@
   // An "Accepted" result shortly after we reported that problem is the same solve.
   const RESULT_REPEAT_MS = 60 * 1000;
   const REQUEST_TIMEOUT_MS = 15 * 1000;
-  const CONFIRM_HIDE_MS = 5000;
+  // Long enough to read the confirmation and click Undo.
+  const CONFIRM_HIDE_MS = 10 * 1000;
+  // How long after a rating its Undo still works: the worker keeps it 15 s.
+  const RATING_UNDO_MS = 14 * 1000;
 
   // The prompt never takes focus by itself: it can appear while you're still
   // typing, and those keys would land on a rating button. This shortcut moves
@@ -38,9 +41,10 @@
   const SUBMIT_BUTTON = '[data-e2e-locator="console-submit-button"]';
   const SUBMISSION_RESULT = '[data-e2e-locator="submission-result"]';
 
+  // Days are the first-solve intervals, used only if the worker sends none.
   const RATINGS = [
     { rating: 'easy', label: 'Easy', days: 7 },
-    { rating: 'medium', label: 'Medium', days: 3 },
+    { rating: 'okay', label: 'Okay', days: 3 },
     { rating: 'hard', label: 'Hard', days: 1 },
   ];
 
@@ -228,9 +232,10 @@
     reported.add(submission.submissionId);
     lastReportedAt.set(submission.slug, Date.now());
     const res = await send({ type: 'leetcode-accepted', submission });
-    // 'already-rated' (rated earlier today) gets no prompt.
+    // 'already-rated' (rated earlier today), 'mastered' and 'idle' (ReLeet is
+    // active on another computer) get no prompt.
     if (res?.status === 'queued' && res.pendingId) {
-      showPrompt({ pendingId: res.pendingId, title: submission.title, tracked: Boolean(res.tracked) });
+      showPrompt({ pendingId: res.pendingId, title: submission.title, tracked: Boolean(res.tracked), intervals: res.intervals });
     }
   }
 
@@ -307,23 +312,23 @@
       display: block !important;
     }
     .card {
+      /* The same colours as ReLeet's popup and Settings (lib/ui.css). */
       --bg: #ffffff;
       --fg: #1c1d1f;
-      --muted: #6b6f76;
-      --border: #e4e5e7;
-      --focus: #3b6ef5;
+      --muted: #62666d;
+      --border: #e3e4e7;
+      --focus: #2c5fdb;
       --shadow: 0 12px 32px rgba(15, 17, 20, 0.16), 0 2px 6px rgba(15, 17, 20, 0.08);
       --easy: #1f9d55;
-      --medium: #d08700;
+      --okay: #d08700;
       --hard: #e5484d;
-      /* Darker label shades: the brand colors are too light for small text on white. */
       --easy-text: #177a42;
-      --medium-text: #945f00;
+      --okay-text: #8a5a00;
       --hard-text: #c5282e;
       box-sizing: border-box;
-      width: 304px;
+      width: 316px;
       max-width: calc(100vw - 32px);
-      padding: 12px 14px 12px;
+      padding: 12px 14px 10px;
       border: 1px solid var(--border);
       border-radius: 12px;
       background: var(--bg);
@@ -369,6 +374,7 @@
     .title { font-weight: 600; overflow-wrap: anywhere; }
     .accepted { color: var(--easy-text); }
     .question { color: var(--muted); margin-top: 2px; }
+    .note { color: var(--muted); }
     .ratings { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
     button {
       font: inherit;
@@ -378,7 +384,9 @@
       border: 0;
       margin: 0;
     }
-    button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    button:focus { outline: none; }
+    button:focus-visible,
+    .card.keyboard button:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
     button[aria-disabled="true"] { cursor: default; opacity: 0.6; }
     .rate {
       min-height: 34px;
@@ -395,10 +403,10 @@
       background: color-mix(in srgb, var(--tone) 17%, transparent);
       border-color: var(--tone);
     }
-    .rate:focus-visible { outline-color: var(--tone); }
-    .rate .days { font-weight: 500; opacity: 0.8; }
+    .rate:focus-visible, .card.keyboard .rate:focus { outline-color: var(--tone); }
+    .rate .days { font-weight: 500; opacity: 0.85; }
     .easy { --tone: var(--easy); --text: var(--easy-text); }
-    .medium { --tone: var(--medium); --text: var(--medium-text); }
+    .okay { --tone: var(--okay); --text: var(--okay-text); }
     .hard { --tone: var(--hard); --text: var(--hard-text); }
     .footer {
       display: flex;
@@ -408,12 +416,13 @@
       margin-top: 8px;
       min-height: 22px;
     }
-    .note { color: var(--muted); font-size: 12px; }
-    .later { color: var(--muted); font-size: 12px; padding: 2px 4px; margin-left: auto; border-radius: 4px; }
-    .later:hover { color: var(--fg); text-decoration: underline; }
-    .status { font-weight: 600; margin-top: 6px; }
-    .status:empty { display: none; }
-    .card.done .ratings, .card.done .footer { display: none; }
+    .link { color: var(--muted); font-size: 12px; padding: 2px 4px; margin: 0 -4px; border-radius: 4px; }
+    .link:hover { color: var(--fg); text-decoration: underline; }
+    .outcome { margin-top: 4px; }
+    .outcome:empty { display: none; }
+    .outcome .action { color: var(--focus); font-weight: 600; padding: 0 2px; border-radius: 4px; }
+    .outcome .action:hover { text-decoration: underline; }
+    .card.done .question, .card.done .ratings, .card.done .footer { display: none; }
   `;
 
   // Dark colors either follow the system (media query) or are forced by the page's theme.
@@ -423,10 +432,10 @@
       --fg: #ececee;
       --muted: #9a9ea6;
       --border: #34363b;
-      --focus: #7096ff;
+      --focus: #7c9dff;
       --shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
-      --easy-text: #25a95c;
-      --medium-text: var(--medium);
+      --easy-text: #3bb36c;
+      --okay-text: #e09a1a;
       --hard-text: #f5676b;
     }`;
     return viaMedia ? `@media (prefers-color-scheme: dark) { ${rule} }` : rule;
@@ -454,9 +463,20 @@
     return node;
   }
 
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+  // "Mon, Nov 9 at 9:00 AM" for the review day ('YYYY-MM-DD') and its block.
+  function reviewWhen(day, start) {
+    const [y, m, d] = String(day ?? '').split('-').map(Number);
+    if (!y) return '';
+    const date = new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    if (!Number.isFinite(start)) return date;
+    return `${date} at ${new Date(start).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+  }
+
   let prompt = null; // the prompt on screen: { host, card, pendingId, done, hideTimer, ... }
 
-  function showPrompt({ pendingId, title, tracked }) {
+  function showPrompt({ pendingId, title, tracked, intervals }) {
     if (prompt && prompt.pendingId === pendingId && !prompt.done) return; // already asking
     hidePrompt({ animate: false });
 
@@ -466,29 +486,36 @@
     // Open so tests and accessibility tools can see in; nothing here is secret.
     const root = host.attachShadow({ mode: 'open' });
 
-    // Live, because it changes to the outcome after a rating.
     const question = h(
       'p',
-      { class: 'question', id: 'releet-question', 'aria-live': 'polite' },
+      { class: 'question', id: 'releet-question' },
       'How hard did it feel?',
+      ...(tracked ? [' ', h('span', { class: 'note' }, 'Counts as a review.')] : []),
     );
-    const status = h('p', { class: 'status', role: 'status', 'aria-live': 'polite' });
-    const buttons = RATINGS.map(({ rating, label, days }) =>
-      h(
+    // Live, because it changes to the outcome after a rating.
+    const outcome = h('p', { class: 'outcome', role: 'status', 'aria-live': 'polite' });
+    const buttons = RATINGS.map(({ rating, label, days: fallback }) => {
+      const days = Number.isInteger(intervals?.[rating]) ? intervals[rating] : fallback;
+      return h(
         'button',
         {
           type: 'button',
           class: `rate ${rating}`,
           'data-rating': rating,
-          'aria-label': `${label}, review again in ${days} day${days === 1 ? '' : 's'}`,
+          'aria-label': `${label}, review again in ${plural(days, 'day')}`,
           onclick: () => rate(current, rating, label),
         },
         h('span', {}, label),
         h('span', { class: 'days' }, ` · ${days}d`),
-      ),
-    );
+      );
+    });
     buttons[0].setAttribute('aria-keyshortcuts', 'Alt+Shift+R');
-    const later = h('button', { type: 'button', class: 'later', onclick: () => hidePrompt() }, 'Later');
+    const mastered = h(
+      'button',
+      { type: 'button', class: 'link mastered', onclick: () => masterIt(current) },
+      'Mastered — stop reviewing',
+    );
+    const later = h('button', { type: 'button', class: 'link later', onclick: () => hidePrompt() }, 'Later');
     // Screen readers hear about the prompt here, since focus stays where it was.
     const announce = h('p', { class: 'sr-only', role: 'status' });
 
@@ -510,18 +537,20 @@
         onfocusin: (event) => {
           if (!card.contains(event.relatedTarget)) current.returnFocus = event.relatedTarget;
         },
+        // The keyboard focus ring is for keyboard use.
+        onpointerdown: () => card.classList.remove('keyboard'),
       },
       h(
         'p',
         { class: 'brand' },
         h('span', {}, 'ReLeet'),
-        h('span', { class: 'shortcut', 'aria-hidden': 'true' }, `${SHORTCUT_LABEL} to rate`),
+        h('span', { class: 'shortcut', 'aria-hidden': 'true' }, SHORTCUT_LABEL),
       ),
-      h('p', { class: 'title', id: 'releet-title' }, h('span', { class: 'accepted' }, '✓ Accepted'), ` — ${title}`),
+      h('p', { class: 'title', id: 'releet-title' }, h('span', { class: 'accepted' }, '✓ Accepted:'), ` ${title}`),
       question,
       h('div', { class: 'ratings', role: 'group', 'aria-label': 'Rate this solve' }, ...buttons),
-      h('div', { class: 'footer' }, ...(tracked ? [h('span', { class: 'note' }, 'Counts as a review')] : []), later),
-      status,
+      h('div', { class: 'footer' }, mastered, later),
+      outcome,
       announce,
     );
 
@@ -534,13 +563,14 @@
     const current = {
       host,
       card,
-      question,
-      status,
+      outcome,
       announce,
-      buttons,
+      buttons: [...buttons, mastered],
       pendingId,
+      title,
       done: false,
       busy: false,
+      undoToken: null,
       hideTimer: null,
       returnFocus: null,
     };
@@ -554,53 +584,116 @@
     }, 250);
   }
 
-  // → true if there was a prompt to move focus to.
+  // Alt+Shift+R: to the rating buttons, or to Undo once rated. → true if
+  // there was a prompt to move focus to.
   function focusPrompt() {
     const current = prompt;
-    if (!current || current.done) return false;
-    current.buttons[0].focus({ preventScroll: true });
+    if (!current) return false;
+    const target = current.done ? current.outcome.querySelector('button') : current.buttons[0];
+    if (!target) return false;
+    current.card.classList.add('keyboard');
+    target.focus({ preventScroll: true, focusVisible: true });
     return true;
+  }
+
+  function setBusy(current, busy) {
+    current.busy = busy;
+    // aria-disabled rather than disabled: a disabled button drops focus, and
+    // focus should go back to the editor when the prompt finishes.
+    for (const b of current.buttons) {
+      if (busy) b.setAttribute('aria-disabled', 'true');
+      else b.removeAttribute('aria-disabled');
+    }
   }
 
   async function rate(current, rating, label) {
     if (current !== prompt || current.busy || current.done) return;
-    current.busy = true;
-    // aria-disabled rather than disabled: a disabled button drops focus, and
-    // focus should go back to the editor when the prompt finishes.
-    for (const b of current.buttons) b.setAttribute('aria-disabled', 'true');
-
+    setBusy(current, true);
     const res = await send({ type: 'rate-pending', id: current.pendingId, rating });
     if (current !== prompt) return; // replaced or closed meanwhile
-    if (res?.status === 'ok') finish(current, `Saved as ${label}.`, nextReviewText(res));
-    else if (res?.status === 'gone') finish(current, 'Already rated in ReLeet.', '');
-    else finish(current, "Couldn't save the rating.", 'Rate it from the ReLeet popup.');
+    if (res?.status === 'ok') {
+      const parts = [strong(`Saved: ${label}.`), ` Next review ${reviewWhen(res.day, res.start)}. `];
+      const actions = [undoButton(current)];
+      if (res.capped) {
+        parts.push("That's the longest interval. ");
+        actions.unshift(actionButton('Mark mastered', () => masterIt(current, { afterRating: true })), ' · ');
+      }
+      // What undoing a later "Mark mastered" goes back to.
+      current.rated = { parts, actions, undoToken: res.undoToken, at: Date.now() };
+      finish(current, [...parts, ...actions], res.undoToken);
+    } else if (res?.status === 'gone') {
+      finish(current, ['Already rated in ReLeet.']);
+    } else {
+      finish(current, ["Couldn't save the rating. Rate it from the ReLeet popup."]);
+    }
   }
 
-  function finish(current, message, detail) {
+  // "Mastered — stop reviewing", or "Mark mastered" after a rating that hit the longest interval.
+  async function masterIt(current, { afterRating = false } = {}) {
+    if (current !== prompt || current.busy || (current.done && !afterRating)) return;
+    setBusy(current, true);
+    const res = await send({ type: 'master-pending', id: current.pendingId });
+    if (current !== prompt) return;
+    if (res?.status === 'ok') {
+      current.undoesTo = afterRating ? current.rated : null;
+      finish(current, [strong('Mastered.'), ` No more reviews of ${current.title}. `, undoButton(current)], res.undoToken);
+    } else if (res?.status === 'gone' && !afterRating) {
+      finish(current, ['Already rated in ReLeet.']);
+    } else {
+      finish(current, ["Couldn't mark it mastered. Do it from the ReLeet popup."]);
+    }
+  }
+
+  const strong = (text) => h('strong', {}, text);
+  const actionButton = (text, onclick) => h('button', { type: 'button', class: 'action', onclick }, text);
+  const undoButton = (current) => actionButton('Undo', () => undoIt(current));
+
+  async function undoIt(current) {
+    if (current !== prompt || current.busy || !current.undoToken) return;
+    const token = current.undoToken;
+    current.undoToken = null;
+    current.busy = true;
+    const res = await send({ type: 'undo', token });
+    if (current !== prompt) return;
+    if (res?.status === 'ok' && current.undoesTo) {
+      // Mastered after a rating: back to that rating's confirmation, with its
+      // Undo while the worker still keeps it.
+      const { parts, actions, undoToken, at } = current.undoesTo;
+      current.undoesTo = null;
+      const fresh = Date.now() - at < RATING_UNDO_MS;
+      finish(current, fresh ? [...parts, ...actions] : parts, fresh ? undoToken : null);
+    } else if (res?.status === 'ok') {
+      // Back to asking, as before the rating.
+      clearTimeout(current.hideTimer);
+      const hadFocus = current.host.shadowRoot.activeElement !== null;
+      current.done = false;
+      setBusy(current, false);
+      current.card.classList.remove('done');
+      current.outcome.replaceChildren();
+      if (hadFocus) current.buttons[0].focus({ preventScroll: true });
+    } else {
+      current.busy = false;
+      current.outcome.replaceChildren("Couldn't undo: it changed in ReLeet since.");
+    }
+  }
+
+  function finish(current, content, undoToken = null) {
     current.done = true;
     current.busy = false;
+    current.undoToken = undoToken;
     const hadFocus = current.host.shadowRoot.activeElement !== null;
     current.card.classList.add('done');
-    current.question.textContent = message;
-    current.status.textContent = detail;
+    current.outcome.replaceChildren(...content);
     current.announce.textContent = ''; // "press … to rate" is out of date now
     // The focused button is now hidden; hand focus back so typing keeps working.
     if (hadFocus) restoreFocus(current);
+    clearTimeout(current.hideTimer);
     current.hideTimer = setTimeout(() => hidePrompt(), CONFIRM_HIDE_MS);
-  }
-
-  // "Next review Thu, Nov 5 · 9:00 AM". The time only when a calendar block exists.
-  function nextReviewText({ dueAt, slot }) {
-    const at = Number.isFinite(slot?.start) ? slot.start : dueAt;
-    if (!Number.isFinite(at)) return '';
-    const date = new Date(at);
-    const day = date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-    if (!Number.isFinite(slot?.start)) return `Next review ${day}`;
-    return `Next review ${day} · ${date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
   }
 
   function restoreFocus(current) {
     const target = current.returnFocus;
+    current.card.classList.remove('keyboard');
     if (target instanceof HTMLElement && target.isConnected && target !== document.body) {
       target.focus({ preventScroll: true });
     } else {

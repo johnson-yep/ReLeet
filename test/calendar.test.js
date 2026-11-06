@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildEventIcs, createReviewInvite, slotForProblem } from '../lib/calendar.js';
+import { buildEventIcs, createReviewInvite } from '../lib/calendar.js';
 import { dayKey, planSchedule } from '../lib/schedule.js';
 
 const MIN = 60_000;
 const SETTINGS = Object.freeze({
   startTime: '09:00',
-  durations: Object.freeze({ easy: 20, medium: 40, hard: 60 }),
+  durations: Object.freeze({ easy: 20, okay: 40, hard: 60 }),
   reminderMinutes: 15,
 });
 const CREATED_AT = Date.UTC(2026, 10, 4, 15, 4, 5);
@@ -32,9 +32,9 @@ function makeSlot(overrides = {}) {
     start,
     end: start + 40 * MIN,
     title: 'Review: Two Sum',
-    description: 'Review Two Sum (last rated Medium).\nhttps://leetcode.com/problems/two-sum/\n\nScheduled by ReLeet.',
+    description: 'Review Two Sum (last rated Okay).\nhttps://leetcode.com/problems/two-sum/\n\nScheduled by ReLeet.',
     url: 'https://leetcode.com/problems/two-sum/',
-    rating: 'medium',
+    rating: 'okay',
     reminderMinutes: 15,
     ...overrides,
   };
@@ -44,12 +44,12 @@ const problem = (overrides = {}) => ({
   id: 'two-sum',
   title: 'Two Sum',
   url: 'https://leetcode.com/problems/two-sum/',
-  rating: 'medium',
+  rating: 'okay',
   solvedAt: at(2026, 11, 2, 12),
   dueAt: at(2026, 11, 5),
   commitSha: null,
   source: 'leetcode',
-  history: [{ at: at(2026, 11, 2, 12), rating: 'medium', commitSha: null }],
+  history: [{ at: at(2026, 11, 2, 12), rating: 'okay', commitSha: null }],
   ...overrides,
 });
 
@@ -94,7 +94,7 @@ test('buildEventIcs writes a complete VCALENDAR with CRLF line endings', () => {
     'UID:abc-123@releet',
     'DTSTAMP:20261104T150405Z',
     'SUMMARY:Review: Two Sum',
-    'DESCRIPTION:Review Two Sum (last rated Medium).\\nhttps://leetcode.com/problems/two-sum/\\n\\nScheduled by ReLeet.',
+    'DESCRIPTION:Review Two Sum (last rated Okay).\\nhttps://leetcode.com/problems/two-sum/\\n\\nScheduled by ReLeet.',
     'URL:https://leetcode.com/problems/two-sum/',
     'STATUS:CONFIRMED',
     'TRANSP:OPAQUE',
@@ -341,70 +341,9 @@ test('download filenames are safe for any problem id', () => {
   assert.match(long, /^[A-Za-z0-9_-]+-review\.ics$/);
 });
 
-// slotForProblem
-
-test('slotForProblem matches the schedule for an upcoming review', () => {
-  const p = problem();
-  const now = at(2026, 11, 4, 8);
-  const s = slotForProblem(p, SETTINGS, now);
-  assert.deepEqual(s, planSchedule(null, [p], SETTINGS, now).entries['two-sum']);
-  assert.equal(s.start, at(2026, 11, 5, 9, 0));
-  assert.equal(s.end, at(2026, 11, 5, 9, 40));
-  assert.equal(s.day, '2026-11-05');
-  assert.equal(s.title, 'Review: Two Sum');
-  assert.equal(s.description, 'Review Two Sum (last rated Medium).\nhttps://leetcode.com/problems/two-sum/\n\nScheduled by ReLeet.');
-  assert.equal(s.reminderMinutes, 15);
-});
-
-test('slotForProblem uses the start time, duration and reminder from settings', () => {
-  const settings = { startTime: '07:15', durations: { easy: 20, medium: 40, hard: 75 }, reminderMinutes: 5 };
-  const s = slotForProblem(problem({ rating: 'hard' }), settings, at(2026, 11, 4, 8));
-  assert.equal(s.start, at(2026, 11, 5, 7, 15));
-  assert.equal(s.end, at(2026, 11, 5, 8, 30));
-  assert.equal(s.reminderMinutes, 5);
-  assert.equal(s.rating, 'hard');
-});
-
-test('slotForProblem places an overdue review at the start time on its due day', () => {
-  const overdue = problem({ dueAt: at(2026, 11, 1) });
-  const s = slotForProblem(overdue, SETTINGS, at(2026, 11, 4, 15, 22));
-  assert.equal(s.day, '2026-11-01');
-  assert.equal(s.start, at(2026, 11, 1, 9, 0));
-  assert.equal(s.end, at(2026, 11, 1, 9, 40));
-});
-
-test('slotForProblem uses the stored review day, not dueAt in the current zone', () => {
-  // Rated in a zone further east: dueAt is the evening before, locally.
-  const p = problem({ dueAt: at(2026, 11, 4, 23), dueDay: '2026-11-05' });
-  assert.equal(slotForProblem(p, SETTINGS, at(2026, 11, 4, 8)).start, at(2026, 11, 5, 9, 0));
-  const overdue = problem({ dueAt: at(2026, 10, 31, 23), dueDay: '2026-11-01' });
-  assert.equal(slotForProblem(overdue, SETTINGS, at(2026, 11, 4, 8)).start, at(2026, 11, 1, 9, 0));
-});
-
-test('slotForProblem today: never before now, rounded up to 5 minutes', () => {
-  const today = problem({ dueAt: at(2026, 11, 4) });
-  assert.equal(slotForProblem(today, SETTINGS, at(2026, 11, 4, 8)).start, at(2026, 11, 4, 9, 0));
-  assert.equal(slotForProblem(today, SETTINGS, at(2026, 11, 4, 13, 21)).start, at(2026, 11, 4, 13, 25));
-});
-
-test('slotForProblem returns null without a due date', () => {
-  assert.equal(slotForProblem(problem({ dueAt: undefined }), SETTINGS, at(2026, 11, 4)), null);
-  assert.equal(slotForProblem(null, SETTINGS), null);
-});
-
-test('slotForProblem across the US DST change (America/Denver)', () => {
-  withTimeZone('America/Denver', () => {
-    const s = slotForProblem(problem({ dueAt: at(2026, 11, 1) }), SETTINGS, at(2026, 11, 4, 12));
-    assert.equal(s.start, Date.UTC(2026, 10, 1, 16, 0)); // 09:00 MST, overdue on its due day
-    const ics = createReviewInvite(s, { createdAt: CREATED_AT }).contents;
-    assert.equal(prop(ics, 'DTSTART'), '20261101T090000');
-    assert.equal(prop(ics, 'UID'), 'two-sum-20261101@releet');
-  });
-});
-
 test('a planned slot round-trips through the ICS text', () => {
   const p = problem({ title: 'Two Sum, II; “Input Array Is Sorted” 🧠', url: 'https://leetcode.com/problems/two-sum-ii-input-array-is-sorted/' });
-  const s = slotForProblem(p, SETTINGS, at(2026, 11, 4, 8));
+  const s = planSchedule(null, [p], SETTINGS, at(2026, 11, 4, 8)).entries[p.id];
   for (const options of [{ uid: 'u', utc: true, method: null }, { uid: 'u' }]) {
     const ics = buildEventIcs(s, options);
     assert.equal(unescapeText(prop(ics, 'SUMMARY')), s.title);

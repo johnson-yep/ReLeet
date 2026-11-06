@@ -1,0 +1,200 @@
+/* Shared by the popup, Settings and the welcome page, so they look and read
+   the same. The in-page prompt (content/leetcode.js) repeats the rating
+   colours; test/contrast.test.js checks every text colour here against every
+   background, in both themes. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1c1d1f;
+  --muted: #62666d;
+  --border: #e3e4e7;
+  --card: #f6f7f8;
+  --tint: #eef2fd;
+  --accent: #2c5fdb;
+  --accent-fg: #ffffff;
+  /* Rating tones, for borders and tints; the -text shades are for words. */
+  --easy: #1f9d55;
+  --okay: #d08700;
+  --hard: #e5484d;
+  --easy-text: #177a42;
+  --okay-text: #8a5a00;
+  --hard-text: #c5282e;
+  --shadow: 0 8px 24px rgba(15, 17, 20, 0.14), 0 1px 3px rgba(15, 17, 20, 0.08);
+  --radius: 8px;
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18191b;
+    --fg: #ececee;
+    --muted: #9a9ea6;
+    --border: #2e3035;
+    --card: #222326;
+    --tint: #232a3a;
+    --accent: #7c9dff;
+    --accent-fg: #10131a;
+    --easy-text: #3bb36c;
+    --okay-text: #e09a1a;
+    --hard-text: #f5676b;
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); }
+a:hover { text-decoration: underline; }
+
+.muted { color: var(--muted); }
+.error { color: var(--hard-text); }
+.ok { color: var(--easy-text); }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Buttons */
+
+button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled,
+button[aria-disabled="true"] {
+  cursor: default;
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--border);
+  opacity: 0.6;
+}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) { border-color: var(--fg); }
+
+.btn-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+}
+.btn-link:hover:not(:disabled) { text-decoration: underline; }
+.btn-link:disabled { background: none; }
+
+.btn-danger { color: var(--hard-text); border-color: color-mix(in srgb, var(--hard) 50%, var(--border)); }
+
+/* A link that looks like a button (it opens a page). */
+.button-like {
+  display: inline-block;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  text-decoration: none;
+}
+.button-like:hover { text-decoration: none; border-color: var(--muted); }
+.button-like.btn-primary { color: var(--accent-fg); border-color: var(--accent); }
+
+/* Rating buttons: the same words and colours everywhere. */
+
+.rate {
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text);
+  background: color-mix(in srgb, var(--tone) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent);
+  border-radius: 7px;
+  padding: 5px 4px;
+}
+.rate:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tone) 17%, transparent);
+  border-color: var(--tone);
+}
+.rate .days { font-weight: 500; opacity: 0.85; }
+.easy { --tone: var(--easy); --text: var(--easy-text); }
+.okay { --tone: var(--okay); --text: var(--okay-text); }
+.hard { --tone: var(--hard); --text: var(--hard-text); }
+.ratings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+
+/* Fields */
+
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="time"],
+input[type="number"] {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+input:focus-visible { outline-offset: -1px; }
+input[aria-invalid="true"] { border-color: var(--hard); }
+
+/* A labelled on/off switch over a checkbox. */
+.switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+.switch input {
+  appearance: none;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.switch input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 120ms;
+}
+.switch input:checked { background: var(--accent); }
+.switch input:checked::after { transform: translateX(14px); }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

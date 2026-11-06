@@ -88,6 +88,9 @@ async function step(name, fn) {
     if (req.method() === 'GET' && url.pathname.startsWith('/problems/')) {
       return route.fulfill({ status: 200, contentType: 'text/html', body: PAGE_HTML });
     }
+    if (req.method() === 'GET' && url.pathname.startsWith('/problemset')) {
+      return route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>Problems</title>' });
+    }
     return route.fulfill({ status: 404, body: '' });
   });
 
@@ -101,6 +104,17 @@ async function step(name, fn) {
     assert.ok(names.includes('calendar-sync'), names.join());
     assert.ok(!names.includes('leetcode-sync'), names.join());
     assert.equal(alarms.find((a) => a.name === 'calendar-sync').periodInMinutes, 15);
+    // Installing opened the welcome page (the reload in the next step closes it).
+    const welcome = await waitFor(() => ctx.pages().find((p) => p.url() === `${base}/welcome/welcome.html`), 10000, 'welcome tab');
+    watchPage(welcome, 'welcome');
+    await welcome.setViewportSize({ width: 900, height: 1300 });
+    await welcome.locator('#leetcode-status').waitFor();
+    assert.equal(await welcome.locator('#leetcode-status').innerText(), 'Waiting for you to sign in…');
+    assert.equal(await welcome.locator('#import').isDisabled(), true);
+    assert.equal(await welcome.locator('#card-google').isHidden(), true); // placeholder client id
+    assert.equal(await welcome.locator('#daily-limit').inputValue(), '60');
+    await welcome.screenshot({ path: SHOT('welcome'), fullPage: true });
+    await welcome.close();
   });
 
   await step('chrome://extensions reports no manifest/runtime errors', async () => {
@@ -124,108 +138,161 @@ async function step(name, fn) {
   });
 
   const DAY = 24 * 3600 * 1000;
-  await step('seeded problems get planned slots (back to back on a shared day)', async () => {
+  const send = (page, message) => page.evaluate((m) => chrome.runtime.sendMessage(m), message);
+  const localTime = (ms) => sw.evaluate((ms) => { const d = new Date(ms); return [d.getHours(), d.getMinutes()]; }, ms);
+  const dayFromToday = (n) => sw.evaluate((n) => { const d = new Date(); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }, n);
+
+  let popup;
+  await step('a new user sees one card in the popup', async () => {
+    popup = await ctx.newPage();
+    watchPage(popup, 'popup');
+    await popup.setViewportSize({ width: 380, height: 640 });
+    await popup.goto(`${base}/popup/popup.html`);
+    await popup.locator('#empty').waitFor();
+    assert.match(await popup.locator('#empty').innerText(), /Solve a problem on LeetCode and ReLeet will ask how it felt\./);
+    assert.equal(await popup.locator('#stats').isHidden(), true);
+    assert.equal(await popup.locator('#leetcode-status a').innerText(), 'LeetCode not connected');
+    await popup.screenshot({ path: SHOT('popup-empty'), fullPage: true });
+  });
+
+  await step('seeded problems get review days under the daily limit; overdue ones are booked today', async () => {
     await sw.evaluate((DAY) => {
       const sod = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
       const add = (ms, n) => { const d = new Date(ms); d.setDate(d.getDate() + n); return d.getTime(); };
+      const key = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
       const now = Date.now();
       const mk = (id, title, rating, solvedDaysAgo, interval) => {
         const solvedAt = now - solvedDaysAgo * DAY;
-        return { id, title, url: `https://leetcode.com/problems/${id}/`, rating, solvedAt, dueAt: add(sod(solvedAt), interval), commitSha: null, source: 'leetcode', history: [{ at: solvedAt, rating, commitSha: null }] };
+        const dueAt = add(sod(solvedAt), interval);
+        return { id, title, url: `https://leetcode.com/problems/${id}/`, rating, interval, solvedAt, dueAt, dueDay: key(dueAt), commitSha: null, source: 'leetcode', history: [{ at: solvedAt, rating, commitSha: null }] };
       };
       const problems = Object.fromEntries([
-        mk('two-sum', 'Two Sum', 'medium', 2, 3), // due tomorrow
-        mk('climbing-stairs', 'Climbing Stairs', 'hard', 0, 1), // due tomorrow, rated later → second block
+        mk('two-sum', 'Two Sum', 'okay', 2, 3), // due tomorrow
+        mk('climbing-stairs', 'Climbing Stairs', 'hard', 0, 1), // due tomorrow, rated later: no room left, so the day after
         mk('valid-anagram', 'Valid Anagram', 'easy', 0, 7),
-        mk('lru-cache', 'LRU Cache', 'hard', 3, 1), // overdue → no block
+        mk('lru-cache', 'LRU Cache', 'hard', 3, 1), // two days overdue: booked today, first in line
       ].map((p) => [p.id, p]));
       const pending = { 'merge-intervals': { id: 'merge-intervals', title: 'Merge Intervals', url: 'https://leetcode.com/problems/merge-intervals/', submittedAt: Math.max(sod(now), now - 3600e3) /* today, even just after midnight */, submissionId: '555', source: 'leetcode' } };
       return chrome.storage.local.set({ problems, pending });
     }, DAY);
     const { schedule } = await waitFor(async () => {
       const s = await getStore('schedule');
-      return s.schedule?.entries?.['climbing-stairs'] && s;
+      return s.schedule?.entries?.['lru-cache'] && s;
     }, 10000, 'schedule');
     const e = schedule.entries;
-    assert.deepEqual(Object.keys(e).sort(), ['climbing-stairs', 'two-sum', 'valid-anagram']);
-    const local = await sw.evaluate((ms) => { const d = new Date(ms); return [d.getHours(), d.getMinutes()]; }, e['two-sum'].start);
-    assert.deepEqual(local, [9, 0]);
+    assert.deepEqual(Object.keys(e).sort(), ['climbing-stairs', 'lru-cache', 'two-sum', 'valid-anagram']);
+    assert.deepEqual(await localTime(e['two-sum'].start), [9, 0]);
+    assert.equal(e['two-sum'].day, await dayFromToday(1));
     assert.equal(e['two-sum'].end - e['two-sum'].start, 40 * 60e3);
-    assert.equal(e['climbing-stairs'].start, e['two-sum'].end);
-    assert.equal(e['climbing-stairs'].end - e['climbing-stairs'].start, 60 * 60e3);
+    assert.equal(e['climbing-stairs'].day, await dayFromToday(2)); // 40 + 60 minutes don't fit in 60
+    assert.equal(e['climbing-stairs'].dueDay, await dayFromToday(1));
+    assert.equal(e['lru-cache'].day, await dayFromToday(0));
+    assert.equal(e['lru-cache'].overdueSince, await dayFromToday(-2));
     assert.equal(e['two-sum'].title, 'Review: Two Sum');
     assert.equal(e['two-sum'].reminderMinutes, 15);
-    const badge = await sw.evaluate(() => chrome.action.getBadgeText({}));
-    assert.equal(badge, '2'); // 1 overdue + 1 pending
+    const badge = await waitFor(async () => (await sw.evaluate(() => chrome.action.getBadgeText({}))) || null, 5000, 'badge');
+    assert.equal(badge, '2'); // LRU Cache due today + Merge Intervals to rate
   });
 
-  let popup;
-  await step('popup renders lists, block times, download buttons, LeetCode status', async () => {
-    popup = await ctx.newPage();
-    watchPage(popup, 'popup');
-    await popup.goto(`${base}/popup/popup.html`);
-    await popup.locator('#pending-list .problem').first().waitFor();
-    assert.match(await popup.locator('#pending-list').innerText(), /Merge Intervals/);
-    const upcoming = await popup.locator('#upcoming-list').innerText();
-    assert.match(upcoming, /Two Sum[\s\S]*due tomorrow · 9:00 AM/);
-    assert.match(upcoming, /Climbing Stairs[\s\S]*due tomorrow · 9:40 AM/);
-    assert.match(await popup.locator('#due-list').innerText(), /LRU Cache[\s\S]*2 days overdue/);
-    assert.doesNotMatch(await popup.locator('#due-list').innerText(), /AM|PM/);
-    assert.equal(await popup.locator('button:has-text("📅")').count(), 4);
-    assert.match(await popup.locator('#sync-status').innerText(), /^LeetCode not connected: open leetcode\.com while signed in$/);
-    // The old ⏰ "make due now" testing button is gone (Settings has a test notification instead).
-    assert.equal(await popup.locator('button:has-text("⏰")').count(), 0);
-    assert.equal(await popup.locator('#sync-now').isHidden(), true);
-    assert.equal(await popup.locator('#calendar-status').isHidden(), true);
-    await popup.screenshot({ path: SHOT('popup'), fullPage: true });
+  await step('popup: stats, To rate, Due today with real intervals, Upcoming by day', async () => {
+    await popup.locator('#to-rate .row').first().waitFor();
+    assert.equal(await popup.locator('#stats').innerText(), '4 tracked · 1 due today · 1-day streak');
+    assert.equal(await popup.locator('#to-rate-title').innerText(), 'TO RATE (1)');
+    assert.match(await popup.locator('#to-rate').innerText(), /Merge Intervals[\s\S]*solved/);
+    const due = popup.locator('#due .row');
+    assert.match(await due.innerText(), /LRU Cache\s*2 days overdue/);
+    // Hard, 1-day interval: Easy × 2.5 = 3 (rounded), Okay × 1.5 = 2, Hard = 1.
+    assert.deepEqual(await due.locator('button.rate').allInnerTexts(), ['Easy · 3d', 'Okay · 2d', 'Hard · 1d']);
+    assert.equal(await due.locator('button.rate.easy').getAttribute('aria-label'), 'Rate LRU Cache: Easy, next review in 3 days');
+    const upcoming = await popup.locator('#upcoming').innerText();
+    assert.match(upcoming, /Tomorrow · 1 review · 40 min\s*Two Sum\s*9:00 AM/);
+    assert.match(upcoming, /Climbing Stairs\s*9:00 AM/);
+    assert.equal(await popup.locator('#leetcode-status a').innerText(), 'LeetCode not connected');
+    // Every button has a name.
+    const unnamed = await popup.evaluate(() => [...document.querySelectorAll('button')].filter((b) => !b.hidden && !(b.getAttribute('aria-label') || b.textContent.trim())).length);
+    assert.equal(unnamed, 0);
+    await popup.screenshot({ path: SHOT('popup-busy'), fullPage: true });
   });
 
-  await step('📅 download uses the planned slot', async () => {
-    const [download] = await Promise.all([
-      popup.waitForEvent('download'),
-      popup.locator('#upcoming-list li', { hasText: 'Climbing Stairs' }).locator('button:has-text("📅")').click(),
-    ]);
-    const file = await download.path();
-    const ics = fs.readFileSync(file, 'utf8');
+  await step('popup: the ⋯ menu adds a review to a calendar app with its planned block', async () => {
+    const row = popup.locator('#upcoming li', { hasText: 'Climbing Stairs' });
+    await row.locator('button[data-action=menu]').click();
+    assert.deepEqual(await row.locator('.menu button').allInnerTexts(), ['Mark mastered', 'Add to calendar (.ics)', 'Stop tracking']);
+    const [download] = await Promise.all([popup.waitForEvent('download'), row.locator('.menu button[data-action=download]').click()]);
+    const ics = fs.readFileSync(await download.path(), 'utf8');
     assert.equal(download.suggestedFilename(), 'climbing-stairs-review.ics');
-    assert.match(ics, /DTSTART:\d{8}T094000\r\n/);
-    assert.match(ics, /DTEND:\d{8}T104000\r\n/);
+    assert.match(ics, /DTSTART:\d{8}T090000\r\n/);
+    assert.match(ics, /DTEND:\d{8}T100000\r\n/);
     assert.match(ics, /SUMMARY:Review: Climbing Stairs/);
   });
 
-  const send = (page, message) => page.evaluate((m) => chrome.runtime.sendMessage(m), message);
+  await step('popup: rating shows "Saved" with Undo, and Undo puts the solve back', async () => {
+    await popup.locator('#to-rate li', { hasText: 'Merge Intervals' }).locator('button.rate.okay').click();
+    await popup.locator('#toast').waitFor();
+    assert.match(await popup.locator('#toast').innerText(), /^Saved: Okay\. Next review \w{3}, \w{3} \d{1,2} at \d{1,2}:\d{2} [AP]M\.\s*Undo$/);
+    assert.equal(await popup.locator('#toast strong').innerText(), 'Saved: Okay.');
+    await waitFor(async () => popup.locator('#to-rate').isHidden(), 5000, 'To rate empty');
+    await popup.screenshot({ path: SHOT('popup-toast'), fullPage: true });
+    await popup.locator('#toast button', { hasText: 'Undo' }).click();
+    await waitFor(async () => (await getStore('pending')).pending?.['merge-intervals'], 5000, 'pending back');
+    assert.equal((await getStore('problems')).problems['merge-intervals'], undefined);
+    await popup.locator('#to-rate li', { hasText: 'Merge Intervals' }).waitFor();
+  });
 
-  await step('messages: rate-pending ok/gone, unconfigured calendars and LeetCode', async () => {
-    const rated = await send(popup, { type: 'rate-pending', id: 'merge-intervals', rating: 'medium' });
+  await step('popup: Mark mastered moves a problem to Mastered; Resume brings it back', async () => {
+    const row = popup.locator('#upcoming li', { hasText: 'Valid Anagram' });
+    await row.locator('button[data-action=menu]').click();
+    await row.locator('.menu button[data-action=master]').click();
+    await popup.locator('#mastered').waitFor();
+    assert.match(await popup.locator('#toast').innerText(), /Valid Anagram is mastered/);
+    assert.equal(await popup.locator('#mastered-title').innerText(), 'Mastered (1)');
+    assert.match(await popup.locator('#stats').innerText(), /3 tracked · 1 due today · 1 mastered/);
+    await waitFor(async () => !(await getStore('schedule')).schedule.entries['valid-anagram'], 5000, 'no block for a mastered problem');
+    await popup.locator('#mastered summary').click();
+    await popup.locator('#mastered button[data-action=resume]').click();
+    await waitFor(async () => popup.locator('#mastered').isHidden(), 5000, 'mastered list gone');
+    assert.match(await popup.locator('#toast').innerText(), /Valid Anagram is back\. Next review/);
+    const p = (await getStore('problems')).problems['valid-anagram'];
+    assert.equal(p.masteredAt, undefined);
+    assert.equal(p.dueDay, await dayFromToday(7));
+  });
+
+  await step('popup: Stop tracking has Undo instead of a dialog', async () => {
+    const row = popup.locator('#upcoming li', { hasText: 'Valid Anagram' });
+    await row.locator('button[data-action=menu]').click();
+    await row.locator('.menu button[data-action=stop]').click();
+    await waitFor(async () => !(await getStore('problems')).problems['valid-anagram'], 5000, 'deleted');
+    await popup.locator('#toast button', { hasText: 'Undo' }).click();
+    await waitFor(async () => (await getStore('problems')).problems['valid-anagram'], 5000, 'restored');
+  });
+
+  await step('messages: rate-pending ok/gone, unconfigured Google, no Outlook, LeetCode not set', async () => {
+    const rated = await send(popup, { type: 'rate-pending', id: 'merge-intervals', rating: 'okay' });
     assert.equal(rated.status, 'ok', JSON.stringify(rated));
-    assert.ok(Number.isFinite(rated.dueAt));
-    assert.equal(rated.slot?.problemId, 'merge-intervals');
-    assert.ok(Number.isFinite(rated.slot.start));
-    assert.deepEqual(await send(popup, { type: 'rate-pending', id: 'merge-intervals', rating: 'medium' }), { status: 'gone' });
+    assert.equal(rated.day, await dayFromToday(3));
+    assert.ok(Number.isFinite(rated.start));
+    assert.equal(rated.capped, false);
+    assert.equal(typeof rated.undoToken, 'string');
+    assert.deepEqual(await send(popup, { type: 'rate-pending', id: 'merge-intervals', rating: 'okay' }), { status: 'gone' });
     const google = await send(popup, { type: 'calendar-connect', provider: 'google' });
     assert.equal(google.status, 'unconfigured');
-    assert.match(google.error, /manifest\.json/);
-    const outlook = await send(popup, { type: 'calendar-connect', provider: 'outlook' });
-    assert.equal(outlook.status, 'unconfigured');
-    assert.match(outlook.error, /lib\/config\.js/);
+    assert.match(google.error, /isn't available/);
+    assert.equal((await send(popup, { type: 'calendar-connect', provider: 'outlook' })).status, 'error');
     assert.equal((await send(popup, { type: 'sync-now' })).status, 'unconfigured');
     assert.equal((await send(popup, { type: 'import-recent' })).status, 'unconfigured');
     const cal = await send(popup, { type: 'calendar-sync-now' });
     assert.equal(cal.status, 'ok');
-    assert.equal(cal.plan.entries, 4);
+    assert.equal(cal.plan.entries, 5);
     assert.equal((await send(popup, { type: 'nope' })) ?? null, null);
-    await waitFor(async () => !(await popup.locator('#pending-section').isVisible()), 5000, 'pending hidden');
-    assert.match(await popup.locator('#upcoming-list').innerText(), /Merge Intervals/);
   });
 
-  await step('apple connect with unreachable iCloud fails cleanly and stores nothing', async () => {
+  await step('apple connect without the iCloud permission fails cleanly and stores nothing', async () => {
     const r = await send(popup, { type: 'calendar-connect', provider: 'apple', credentials: { appleId: 'me@icloud.com', appPassword: 'abcd-efgh-ijkl-mnop' } });
-    console.log('   apple connect →', JSON.stringify(r));
-    assert.equal(r.status, 'error');
+    assert.deepEqual(r, { status: 'error', error: 'ReLeet needs your permission to reach iCloud.' });
     assert.equal((await getStore('calendars')).calendars ?? null, null);
   });
 
-  await step('popup: connected calendar hides 📅, shows status and Reconnect banner', async () => {
+  await step('popup: a calendar that needs signing in shows Reconnect, and the .ics item goes', async () => {
     await sw.evaluate(() =>
       chrome.storage.local.set({
         calendars: {
@@ -234,10 +301,11 @@ async function step(name, fn) {
       }),
     );
     await popup.locator('.banner').waitFor();
-    // The banner names the actual cause, not a generic "sign in again".
-    assert.match(await popup.locator('.banner').innerText(), /iCloud Calendar: Apple ID or app-specific password was rejected\.\s*Reconnect/);
-    assert.equal(await popup.locator('#calendar-status').innerText(), 'Calendar: Apple');
-    assert.equal(await popup.locator('button:has-text("📅")').count(), 0);
+    assert.match(await popup.locator('.banner').innerText(), /Apple Calendar needs you to sign in again\.\s*Reconnect/);
+    const row = popup.locator('#upcoming li', { hasText: 'Two Sum' });
+    await row.locator('button[data-action=menu]').click();
+    assert.deepEqual(await row.locator('.menu button').allInnerTexts(), ['Mark mastered', 'Stop tracking']);
+    await popup.keyboard.press('Escape');
     await popup.screenshot({ path: SHOT('popup-calendar'), fullPage: true });
     const [options] = await Promise.all([ctx.waitForEvent('page'), popup.locator('.banner button').click()]);
     await options.waitForLoadState();
@@ -246,49 +314,42 @@ async function step(name, fn) {
   });
 
   let options;
-  await step('options renders sections, setup-needed cards, schedule defaults', async () => {
+  await step('Settings: sections in order, Apple card, schedule defaults, plain words', async () => {
     options = await ctx.newPage();
     watchPage(options, 'options');
-    options.setViewportSize({ width: 900, height: 1000 });
+    await options.setViewportSize({ width: 900, height: 1000 });
     await options.goto(`${base}/options/options.html`);
     await options.locator('#card-apple').waitFor();
-    for (const h of ['LeetCode', 'Calendars', 'Schedule']) assert.equal(await options.locator(`h2:text-is("${h}")`).count(), 1, h);
-    for (const name of ['google', 'outlook']) {
-      const card = options.locator(`#card-${name}`);
-      assert.match(await card.innerText(), /One-time setup needed — see SETUP\.md/);
-      assert.equal(await card.locator('button.connect').isDisabled(), true);
-    }
+    assert.deepEqual(await options.locator('h2').allInnerTexts(), ['LeetCode', 'Schedule', 'Calendars', 'Notifications', 'This computer', 'Privacy & data']);
+    assert.equal(await options.locator('#card-google').isHidden(), true);
     const apple = options.locator('#card-apple');
     assert.match(await apple.innerText(), /Connected as me@icloud\.com/);
     assert.match(await apple.innerText(), /password was rejected\. Reconnect to keep this calendar up to date\./);
-    assert.doesNotMatch(await apple.innerText(), /Sign-in expired/);
     assert.equal(await apple.locator('input[type=email]').inputValue(), 'me@icloud.com');
-    assert.equal(await apple.locator('button.connect').innerText(), 'Reconnect');
-    assert.equal(await apple.locator('a[href="https://account.apple.com"]').count(), 1);
+    assert.equal(await apple.locator('button[data-action=connect]').innerText(), 'Reconnect');
     assert.equal(await options.locator('#start-time').inputValue(), '09:00');
-    assert.deepEqual(
-      await Promise.all(['easy', 'medium', 'hard'].map((r) => options.locator(`#duration-${r}`).inputValue())),
-      ['20', '40', '60'],
-    );
+    assert.equal(await options.locator('#daily-limit').inputValue(), '60');
+    assert.deepEqual(await Promise.all(['easy', 'okay', 'hard'].map((r) => options.locator(`#duration-${r}`).inputValue())), ['20', '40', '60']);
     assert.equal(await options.locator('#reminder-text').innerText(), '15 minutes before');
-    assert.match(await options.locator('#username-note').innerText(), /Not set\. Open \(or reload\) a leetcode\.com page/);
+    assert.equal(await options.locator('#daily-summary').isChecked(), true);
     assert.equal(await options.locator('#sync-now').isDisabled(), true);
+    assert.equal(await options.locator('#idle-banner').isHidden(), true);
+    assert.equal(await options.locator('button[type=submit]').count(), 0); // no Save buttons
+    const text = await options.locator('main').innerText();
+    for (const word of ['SETUP.md', 'CalDAV', 'chrome://', 'Last error', 'Outlook']) assert.ok(!text.includes(word), word);
     await options.screenshot({ path: SHOT('options'), fullPage: true });
   });
 
-  await step('options: test notification shows the soonest review and changes nothing', async () => {
-    const before = await getStore(['problems', 'schedule']);
+  await step('Settings: the test notification is the daily summary, and changes nothing', async () => {
+    const before = await getStore(['problems', 'schedule', 'dailySummary']);
     await options.click('#test-notification');
     await waitFor(async () => /^Sent/.test(await options.locator('#notification-status').innerText()), 5000, 'sent');
-    assert.match(await options.locator('#notification-status').innerText(), /reminder for “LRU Cache”.*Nothing was changed/);
-    const shown = await sw.evaluate(() => chrome.notifications.getAll());
-    assert.ok(Object.hasOwn(shown, 'review:lru-cache'), JSON.stringify(shown));
-    assert.deepEqual(await getStore(['problems', 'schedule']), before);
+    await waitFor(async () => Object.hasOwn(await sw.evaluate(() => chrome.notifications.getAll()), 'daily-summary'), 5000, 'notification shown');
+    assert.deepEqual(await getStore(['problems', 'schedule', 'dailySummary']), before);
   });
 
-  await step('options: keyboard focus survives a calendar save during a sync', async () => {
-    await options.locator('#card-apple button.disconnect').focus();
-    // A sync saves the calendars key after each event; here a save that changes only the event map.
+  await step('Settings: keyboard focus survives a calendar save during a sync', async () => {
+    await options.locator('#card-apple button[data-action=disconnect]').focus();
     await sw.evaluate(async () => {
       const { calendars } = await chrome.storage.local.get('calendars');
       calendars.apple.events = { x: { id: 'x', day: '2026-01-01', start: 1, end: 2, hash: 'h' } };
@@ -296,80 +357,106 @@ async function step(name, fn) {
     });
     await sleep(300);
     assert.equal(await options.evaluate(() => document.activeElement?.dataset.action), 'disconnect');
-    // A save the card does show (lastSyncAt) rebuilds it; focus goes to the new button.
     await sw.evaluate(async () => {
       const { calendars } = await chrome.storage.local.get('calendars');
       calendars.apple.lastSyncAt = Date.now();
       await chrome.storage.local.set({ calendars });
     });
-    await waitFor(async () => /last synced just now/.test(await options.locator('#card-apple').innerText()), 5000, 'rerender');
+    await waitFor(async () => /updated just now/.test(await options.locator('#card-apple').innerText()), 5000, 'rerender');
     assert.equal(await options.evaluate(() => document.activeElement?.dataset.action), 'disconnect');
-    assert.equal(await options.evaluate(() => document.activeElement?.closest('.calendar-card')?.id), 'card-apple');
-    // The message line is one element for the card's lifetime (a live region that's kept).
     assert.equal(await options.locator('#card-apple p[role=status]').count(), 1);
   });
 
-  await step('options: saving a username sets source manual, starts the 15-min check', async () => {
+  await step('Settings: a typed username saves itself and starts the 15-minute check', async () => {
     server.ac = [{ id: '900', title: 'Two Sum', titleSlug: 'two-sum', timestamp: String(Math.floor(Date.now() / 1000) - 7200) }];
     await options.fill('#username-input', '@alice');
-    await options.click('#username-form button[type=submit]');
     const { settings } = await waitFor(async () => {
       const s = await getStore('settings');
       return s.settings?.leetcodeUsername === 'alice' && s;
     }, 5000, 'settings');
     assert.equal(settings.leetcodeUsernameSource, 'manual');
-    const status = await waitFor(async () => {
-      const t = await options.locator('#leetcode-status').innerText();
-      return t && t !== 'Checking…' && t;
-    }, 30000, 'check result');
-    console.log('   check result:', status, '| worker requests to leetcode routed:', server.requests.filter((r) => r.from === 'worker').length);
-    const alarm = await sw.evaluate(() => chrome.alarms.get('leetcode-sync'));
-    assert.equal(alarm?.periodInMinutes, 15);
+    await waitFor(async () => (await options.locator('.saved[data-for="username-input"]').innerText()) === 'Saved', 3000, 'Saved note');
+    const alarm = await waitFor(() => sw.evaluate(() => chrome.alarms.get('leetcode-sync')), 5000, 'alarm');
+    assert.equal(alarm.periodInMinutes, 15);
+    await options.locator('#start-time').focus(); // leave the username field
     assert.match(await options.locator('#username-note').innerText(), /Typed here/);
   });
 
-  await step('options: schedule change moves upcoming blocks', async () => {
+  await step('Settings: schedule changes save as they happen and move upcoming blocks', async () => {
     await options.fill('#start-time', '08:30');
-    await options.fill('#duration-medium', '45');
-    await options.click('#schedule-form button[type=submit]');
-    await waitFor(async () => (await options.locator('#schedule-status').innerText()).startsWith('Saved'), 5000, 'saved');
+    await options.locator('#start-time').dispatchEvent('change');
+    await options.fill('#duration-okay', '45');
     const { schedule } = await waitFor(async () => {
       const s = await getStore('schedule');
-      return s.schedule?.layoutKey?.startsWith('08:30') && s;
+      return s.schedule?.layoutKey?.startsWith('08:30|easy=20,okay=45') && s;
     }, 10000, 'replanned schedule');
-    const e = schedule.entries;
-    const local = await sw.evaluate((ms) => { const d = new Date(ms); return [d.getHours(), d.getMinutes()]; }, e['two-sum'].start);
-    assert.deepEqual(local, [8, 30]);
-    assert.equal(e['two-sum'].end - e['two-sum'].start, 45 * 60e3);
-    assert.equal(e['climbing-stairs'].start, e['two-sum'].end);
-    assert.match(await popup.locator('#upcoming-list').innerText(), /Two Sum[\s\S]*due tomorrow · 8:30 AM/);
-    const bad = await options.evaluate(() => {
-      document.querySelector('#duration-easy').value = '2';
-      document.querySelector('#schedule-form').requestSubmit();
-      return new Promise((r) => setTimeout(() => r(document.querySelector('#duration-easy').validationMessage), 300));
-    });
-    assert.ok(bad, 'native validation blocks 2 minutes');
+    assert.deepEqual(await localTime(schedule.entries['two-sum'].start), [8, 30]);
+    assert.equal(schedule.entries['two-sum'].end - schedule.entries['two-sum'].start, 45 * 60e3);
+    await waitFor(async () => /Two Sum\s*8:30 AM/.test(await popup.locator('#upcoming').innerText()), 5000, 'popup follows');
+    // A bad value is pointed out and not saved.
+    await options.fill('#duration-easy', '2');
+    await waitFor(async () => !(await options.locator('#durations-error').isHidden()), 3000, 'inline error');
+    assert.match(await options.locator('#durations-error').innerText(), /whole minutes from 5 to 240/);
+    assert.equal(await options.locator('#duration-easy').getAttribute('aria-invalid'), 'true');
+    assert.equal((await getStore('settings')).settings.durations.easy, 20);
+    await options.fill('#duration-easy', '20');
   });
 
-  await step('options: disconnect failure offers "Disconnect anyway" → force keeps only a leftover record', async () => {
+  await step('Settings: a bigger daily limit brings a moved review back to its own day', async () => {
+    assert.equal((await getStore('schedule')).schedule.entries['climbing-stairs'].day, await dayFromToday(2));
+    await options.fill('#daily-limit', '120');
+    const tomorrow = await dayFromToday(1);
+    await waitFor(async () => (await getStore('schedule')).schedule.entries['climbing-stairs'].day === tomorrow, 10000, 'moved back');
+  });
+
+  await step('Settings: disconnect failure offers "Disconnect anyway" → force keeps only a leftover record', async () => {
     options.on('dialog', (d) => d.accept());
-    await options.locator('#card-apple button.disconnect').click();
-    await options.locator('#card-apple button.force-disconnect').waitFor({ timeout: 40000 });
+    await options.locator('#card-apple button[data-action=disconnect]').click();
+    await options.locator('#card-apple button[data-action=force-disconnect]').waitFor({ timeout: 40000 });
     console.log('   disconnect error:', await options.locator('#card-apple p[role=status]').innerText());
-    await options.locator('#card-apple button.force-disconnect').click();
-    // The calendar couldn't be deleted, so its id and events are kept (no password) for a later Connect.
+    await options.locator('#card-apple button[data-action=force-disconnect]').click();
     const left = await waitFor(async () => {
       const apple = (await getStore('calendars')).calendars?.apple;
       return apple && apple.connected === false && apple;
     }, 10000, 'apple left behind');
     assert.equal(left.calendarId, 'https://p01-caldav.icloud.com/1/calendars/abc/');
     assert.deepEqual(left.auth, { appleId: 'me@icloud.com' });
-    await waitFor(async () => /Not connected/.test(await options.locator('#card-apple').innerText()), 5000, 'card');
-    await waitFor(async () => (await popup.locator('button:has-text("📅")').count()) > 0, 5000, 'popup 📅 back');
+    await waitFor(async () => (await options.locator('#card-apple button[data-action=connect]').innerText()) === 'Connect', 5000, 'card');
     assert.equal(await popup.locator('.banner').count(), 0);
   });
 
-  await step('content script on leetcode.com → worker → in-page prompt → rating with slot', async () => {
+  await step('Settings: export has no sign-ins; importing it merges back', async () => {
+    const [download] = await Promise.all([options.waitForEvent('download'), options.click('#export')]);
+    assert.match(download.suggestedFilename(), /^releet-export-\d{4}-\d{2}-\d{2}\.json$/);
+    const file = await download.path();
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(data.format, 'releet-export');
+    assert.deepEqual(Object.keys(data.problems).sort(), ['climbing-stairs', 'lru-cache', 'merge-intervals', 'two-sum', 'valid-anagram']);
+    assert.equal(data.calendars.apple.calendarId, 'https://p01-caldav.icloud.com/1/calendars/abc/');
+    assert.doesNotMatch(JSON.stringify(data), /appPassword|token/i);
+    await options.setInputFiles('#import-file', file);
+    await waitFor(async () => /^Imported 5 problems \(0 new/.test(await options.locator('#transfer-status').innerText()), 5000, 'imported');
+  });
+
+  await step('another computer becomes the main one: popup and Settings go idle; the page gets no prompt', async () => {
+    await sw.evaluate(() => chrome.storage.sync.set({ mainComputer: { id: 'another-computer', claimedAt: Date.now() } }));
+    await popup.locator('#idle').waitFor();
+    assert.equal(await popup.locator('#main').isHidden(), true);
+    await popup.screenshot({ path: SHOT('popup-idle'), fullPage: true });
+    await options.locator('#idle-banner').waitFor();
+    const accepted = await send(popup, { type: 'leetcode-accepted', submission: { submissionId: '1', slug: 'two-sum', title: 'Two Sum', timestamp: Date.now() } });
+    assert.deepEqual(accepted, { status: 'idle' });
+    await waitFor(async () => (await sw.evaluate(() => chrome.alarms.getAll())).length === 0, 5000, 'alarms cleared');
+    // Use this computer instead, with a confirmation step.
+    await popup.locator('#use-here').click();
+    await popup.locator('#use-here-confirm').click();
+    await popup.locator('#main').waitFor();
+    await waitFor(() => sw.evaluate(() => chrome.alarms.get('calendar-sync')), 5000, 'active again');
+    assert.equal(await options.locator('#idle-banner').isHidden(), true);
+  });
+
+  await step('content script on leetcode.com → worker → in-page prompt → rating → Undo', async () => {
+    await sw.evaluate(() => chrome.storage.local.remove('pending'));
     const page = await ctx.newPage();
     watchPage(page, 'leetcode');
     page.setViewportSize({ width: 1280, height: 720 });
@@ -379,48 +466,79 @@ async function step(name, fn) {
     server.ac.unshift({ id: '1001', title: 'Two Sum', titleSlug: 'two-sum', timestamp: String(Math.floor(Date.now() / 1000)) });
     const prompt = page.locator('releet-prompt');
     await prompt.locator('.card').waitFor({ timeout: 15000 });
-    assert.match(await prompt.locator('.title').innerText(), /Accepted — Two Sum/);
+    assert.equal(await prompt.locator('.title').innerText(), '✓ Accepted: Two Sum');
     assert.match(await prompt.locator('.card').innerText(), /Counts as a review/);
-    const { pending } = await getStore('pending');
-    assert.equal(pending['two-sum']?.submissionId, '1001');
+    // Two Sum's interval is 3 days: Easy × 2.5 → 8, Okay × 1.5 → 5 (rounded), Hard → 1.
+    assert.deepEqual(await prompt.locator('button.rate').allInnerTexts(), ['Easy · 8d', 'Okay · 5d', 'Hard · 1d']);
+    assert.equal((await getStore('pending')).pending['two-sum']?.submissionId, '1001');
     await page.screenshot({ path: SHOT('leetcode-prompt') });
-    // The prompt doesn't take focus from the page.
     assert.equal(await page.evaluate(() => document.querySelector('releet-prompt').shadowRoot.activeElement), null);
-    // The worker sees this tab's problem with the host permission alone (no "tabs"
-    // permission), so a background check can leave this solve to the page's prompt.
-    const tabUrls = await sw.evaluate(async () =>
-      (await chrome.tabs.query({ url: 'https://leetcode.com/problems/*' })).map((t) => t.url),
-    );
+    // The worker sees this tab's problem with the host permission alone (no "tabs" permission).
+    const tabUrls = await sw.evaluate(async () => (await chrome.tabs.query({ url: 'https://leetcode.com/problems/two-sum/*' })).map((t) => t.url));
     assert.deepEqual(tabUrls, ['https://leetcode.com/problems/two-sum/description/']);
-    // The content script's world can't read or write extension storage (calendar sign-ins live there);
-    // its messages still work.
+    // The content script's world can't read or write extension storage, or reach more than its prompt.
     const cdp = await ctx.newCDPSession(page);
     const contexts = [];
     cdp.on('Runtime.executionContextCreated', (e) => contexts.push(e.context));
     await cdp.send('Runtime.enable');
     const isolated = await waitFor(() => contexts.find((c) => c.auxData?.type === 'isolated' && c.origin?.includes(id)) ?? contexts.find((c) => c.name === 'ReLeet'), 5000, 'isolated world');
     const probe = async (expression) => (await cdp.send('Runtime.evaluate', { contextId: isolated.id, expression, awaitPromise: true, returnByValue: true })).result.value;
-    const read = await probe(`chrome.storage.local.get('calendars').then(() => 'read ok', (e) => String(e.message))`);
-    console.log('   content script storage read →', read);
-    assert.match(read, /not allowed/i);
+    assert.match(await probe(`chrome.storage.local.get('calendars').then(() => 'read ok', (e) => String(e.message))`), /not allowed/i);
     assert.match(await probe(`chrome.storage.local.set({ x: 1 }).then(() => 'write ok', (e) => String(e.message))`), /not allowed/i);
-    assert.equal(await probe(`chrome.runtime.sendMessage({ type: 'leetcode-user', username: 'alice' }).then((r) => JSON.stringify(r))`), '{"changed":false}');
+    assert.equal(await probe(`chrome.runtime.sendMessage({ type: 'export-data' }).then((r) => JSON.stringify(r ?? null))`), 'null');
     await cdp.detach();
-    await prompt.locator('button.rate.medium').click();
+    await prompt.locator('button.rate.okay').click();
     await waitFor(async () => /Next review/.test(await prompt.locator('.card').innerText()), 8000, 'confirmation');
-    const text = await prompt.locator('.card').innerText();
+    const text = await prompt.locator('.outcome').innerText();
     console.log('   prompt says:', text.replace(/\s+/g, ' '));
-    assert.match(text, /Saved as Medium\./);
-    if (!/9:15 AM/.test(text)) console.log('   schedule:', JSON.stringify((await getStore('schedule')).schedule.entries, null, 0), JSON.stringify((await getStore('calendars')).calendars));
-    assert.match(text, /Next review \w{3}, \w{3} \d{1,2} · 9:15 AM/);
+    assert.match(text, /^Saved: Okay\. Next review \w{3}, \w{3} \d{1,2} at \d{1,2}:\d{2} [AP]M\.\s*Undo$/);
     const { problems } = await getStore('problems');
     assert.equal(problems['two-sum'].history.length, 2);
-    // Merge Intervals (rated earlier, same review day) holds 8:30–9:15, so Two Sum follows it.
-    const { schedule } = await getStore('schedule');
-    assert.equal(schedule.entries['two-sum'].start, schedule.entries['merge-intervals'].end);
-    assert.equal((await getStore('pending')).pending['two-sum'], undefined);
+    assert.equal(problems['two-sum'].interval, 5);
     await page.screenshot({ path: SHOT('leetcode-confirm') });
+    await prompt.locator('.outcome button.action').click();
+    await waitFor(async () => (await getStore('pending')).pending?.['two-sum'], 5000, 'undone');
+    assert.equal((await getStore('problems')).problems['two-sum'].history.length, 1);
+    await prompt.locator('.question').waitFor();
     await page.close();
+  });
+
+  await step('on a computer that is not the main one, the welcome page says so and Done takes nothing over', async () => {
+    await sw.evaluate(() => chrome.storage.sync.set({ mainComputer: { id: 'another-computer', claimedAt: 1 } }));
+    const welcome = await ctx.newPage();
+    watchPage(welcome, 'welcome-idle');
+    await welcome.goto(`${base}/welcome/welcome.html`);
+    await welcome.locator('#idle-notice').waitFor();
+    assert.match(await welcome.locator('#idle-notice').innerText(), /already active on another computer/);
+    await welcome.click('#done');
+    await waitFor(() => welcome.url().startsWith('https://leetcode.com/problemset'), 5000, 'went to LeetCode');
+    assert.equal((await sw.evaluate(() => chrome.storage.sync.get('mainComputer'))).mainComputer.id, 'another-computer');
+    await welcome.close();
+  });
+
+  await step('the welcome page shows the detected username, and Done makes this the main computer', async () => {
+    // As on a fresh install: nobody holds the claim, and this copy has never been idle.
+    await sw.evaluate(() => Promise.all([chrome.storage.sync.remove('mainComputer'), chrome.storage.local.remove('idleSince')]));
+    const welcome = await ctx.newPage();
+    watchPage(welcome, 'welcome');
+    await welcome.setViewportSize({ width: 900, height: 1300 });
+    await welcome.goto(`${base}/welcome/welcome.html`);
+    await waitFor(async () => (await welcome.locator('#leetcode-status').innerText()) === 'Signed in as @alice ✓', 5000, 'signed in');
+    assert.equal(await welcome.locator('#idle-notice').isHidden(), true);
+    assert.equal(await welcome.locator('#import').isDisabled(), false);
+    await welcome.screenshot({ path: SHOT('welcome-signed-in'), fullPage: true });
+    await welcome.click('#done');
+    await waitFor(async () => (await sw.evaluate(() => chrome.storage.sync.get('mainComputer'))).mainComputer, 5000, 'claimed');
+    await waitFor(() => welcome.url().startsWith('https://leetcode.com/problemset'), 5000, 'went to LeetCode');
+    await welcome.close();
+  });
+
+  await step('Settings: Delete all my ReLeet data clears this browser', async () => {
+    await options.click('#delete-all'); // the dialog handler accepts
+    await waitFor(async () => /All ReLeet data in this browser is deleted\./.test(await options.locator('#delete-status').innerText()), 15000, 'deleted');
+    const left = await sw.evaluate(() => chrome.storage.local.get(['problems', 'pending', 'calendars']));
+    assert.deepEqual(left, {});
+    await popup.locator('#empty').waitFor();
   });
 
   await step('a leetcode.com tab open across an extension reload gets a working script (one prompt)', async () => {
@@ -460,6 +578,7 @@ async function step(name, fn) {
   });
 
   await step('no worker or page console errors', async () => {
+    for (const e of [...pageErrors, ...workerErrors]) console.log('   ', e);
     assert.deepEqual(pageErrors, []);
     assert.deepEqual(workerErrors, []);
   });

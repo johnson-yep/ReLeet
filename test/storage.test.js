@@ -9,7 +9,7 @@ test('getSettings fills defaults, including nested durations', async () => {
   chrome.reset({ settings: { startTime: '07:30', durations: { hard: 90 } } });
   const s = await storage.getSettings();
   assert.equal(s.startTime, '07:30');
-  assert.deepEqual(s.durations, { easy: 20, medium: 40, hard: 90 });
+  assert.deepEqual(s.durations, { easy: 20, okay: 40, hard: 90 });
   assert.equal(s.reminderMinutes, 15);
 });
 
@@ -43,7 +43,7 @@ async function withSlowStorage(fn) {
 }
 
 test('a rating and a newly detected solve at the same moment both land', async () => {
-  const { ratePending } = await import('../lib/rating.js');
+  const { ratePending } = await import('../lib/actions.js');
   const sub = (id, submittedAt) => ({
     id,
     title: id,
@@ -66,20 +66,20 @@ test('a rating and a newly detected solve at the same moment both land', async (
   }
 });
 
-test('rating the same submission twice at once counts once; dismiss and delete wait their turn', async () => {
-  const { ratePending } = await import('../lib/rating.js');
+test('rating the same submission twice at once counts once; other changes wait their turn', async () => {
+  const { addSolved, ratePending, stopTracking } = await import('../lib/actions.js');
   const sub = (id) => ({ id, title: id.toUpperCase(), url: 'u', submittedAt: 1 });
   chrome.reset({ pending: { a: sub('a'), b: sub('b') } });
   const results = await withSlowStorage(() =>
-    Promise.all([ratePending('a', 'easy'), ratePending('a', 'hard'), storage.dismissPending(['b'])]),
+    Promise.all([ratePending('a', 'easy'), ratePending('a', 'hard'), stopTracking('b')]),
   );
-  assert.equal(results.filter(Boolean).length, 1);
+  assert.equal(results.slice(0, 2).filter(Boolean).length, 1);
   const { pending, problems } = chrome.dump();
   assert.deepEqual(pending, {});
   assert.equal(problems.a.history.length, 1);
 
   await withSlowStorage(() =>
-    Promise.all([storage.saveProblem({ id: 'c', title: 'C' }), storage.deleteProblem('a'), storage.saveProblem({ id: 'd' })]),
+    Promise.all([addSolved({ id: 'c', title: 'C', url: 'u' }, 'easy'), stopTracking('a'), addSolved({ id: 'd', title: 'D', url: 'u' }, 'hard')]),
   );
   assert.deepEqual(Object.keys(chrome.dump().problems).sort(), ['c', 'd']);
 });
@@ -100,4 +100,15 @@ test('withStorageLock uses Web Locks when the browser has them', async () => {
     if (original) Object.defineProperty(globalThis, 'navigator', original);
     else delete globalThis.navigator;
   }
+});
+
+test("undo still works when storage hands the problem back with its keys in another order", async () => {
+  const { ratePending, undo } = await import('../lib/actions.js');
+  chrome.reset({ pending: { a: { id: 'a', title: 'A', url: 'u', submittedAt: 1 } } });
+  const change = await ratePending('a', 'easy');
+  // Chrome's storage returns objects with sorted keys.
+  const sorted = (v) => JSON.parse(storage.canonicalJson(v));
+  chrome.reset({ problems: sorted(chrome.dump().problems), pending: {} });
+  assert.equal(await undo('a', change), true);
+  assert.ok(chrome.dump().pending.a);
 });
