@@ -66,20 +66,20 @@ test('a rating and a newly detected solve at the same moment both land', async (
   }
 });
 
-test('rating the same submission twice at once counts once; dismiss and delete wait their turn', async () => {
-  const { ratePending } = await import('../lib/actions.js');
+test('rating the same submission twice at once counts once; other changes wait their turn', async () => {
+  const { addSolved, ratePending, stopTracking } = await import('../lib/actions.js');
   const sub = (id) => ({ id, title: id.toUpperCase(), url: 'u', submittedAt: 1 });
   chrome.reset({ pending: { a: sub('a'), b: sub('b') } });
   const results = await withSlowStorage(() =>
-    Promise.all([ratePending('a', 'easy'), ratePending('a', 'hard'), storage.dismissPending(['b'])]),
+    Promise.all([ratePending('a', 'easy'), ratePending('a', 'hard'), stopTracking('b')]),
   );
-  assert.equal(results.filter(Boolean).length, 1);
+  assert.equal(results.slice(0, 2).filter(Boolean).length, 1);
   const { pending, problems } = chrome.dump();
   assert.deepEqual(pending, {});
   assert.equal(problems.a.history.length, 1);
 
   await withSlowStorage(() =>
-    Promise.all([storage.saveProblem({ id: 'c', title: 'C' }), storage.deleteProblem('a'), storage.saveProblem({ id: 'd' })]),
+    Promise.all([addSolved({ id: 'c', title: 'C', url: 'u' }, 'easy'), stopTracking('a'), addSolved({ id: 'd', title: 'D', url: 'u' }, 'hard')]),
   );
   assert.deepEqual(Object.keys(chrome.dump().problems).sort(), ['c', 'd']);
 });

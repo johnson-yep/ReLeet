@@ -419,7 +419,7 @@ test('deleting a problem deletes its event', async () => {
   await sync.connectCalendar('google');
   const ref = stored('google').events['jump-game'];
 
-  await storage.deleteProblem('jump-game');
+  await storage.updateEntry('jump-game', () => ({ problem: null, pending: null }));
   const res = await sync.syncCalendars();
 
   assert.deepEqual(res.results.google, { created: 0, updated: 0, removed: 1, forgotten: 0, error: null });
