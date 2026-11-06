@@ -1,8 +1,9 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { installFakeChrome } from './helpers/fake-chrome.js';
+import { installFakeChrome, installFakeIndexedDB } from './helpers/fake-chrome.js';
 
 const chrome = installFakeChrome();
+installFakeIndexedDB();
 const storage = await import('../lib/storage.js');
 const schedule = await import('../lib/schedule.js');
 const { recordReview } = await import('../lib/srs.js');
@@ -934,6 +935,11 @@ test('the chrome-wired instance connects, syncs and disconnects Apple over CalDA
     const ref = state.events['two-sum'];
     assert.ok(ref.id.startsWith(state.calendarId) && ref.id.endsWith('.ics'));
     assert.equal(ref.etag, '"1"');
+    // The app-specific password is stored encrypted, and the next sync can still use it.
+    assert.equal(state.auth.appleId, 'me@icloud.com');
+    assert.doesNotMatch(JSON.stringify(state.auth), /app-pass/);
+    assert.equal(typeof state.auth.appPassword.data, 'string');
+    assert.equal((await calendarSync.syncCalendars()).results.apple.error, null);
     assert.match(server.resources.get(new URL(ref.id).pathname), /SUMMARY:Review: two-sum/);
     assert.equal(state.lastError, null);
 

@@ -43,7 +43,7 @@ async function withSlowStorage(fn) {
 }
 
 test('a rating and a newly detected solve at the same moment both land', async () => {
-  const { ratePending } = await import('../lib/rating.js');
+  const { ratePending } = await import('../lib/actions.js');
   const sub = (id, submittedAt) => ({
     id,
     title: id,
@@ -67,7 +67,7 @@ test('a rating and a newly detected solve at the same moment both land', async (
 });
 
 test('rating the same submission twice at once counts once; dismiss and delete wait their turn', async () => {
-  const { ratePending } = await import('../lib/rating.js');
+  const { ratePending } = await import('../lib/actions.js');
   const sub = (id) => ({ id, title: id.toUpperCase(), url: 'u', submittedAt: 1 });
   chrome.reset({ pending: { a: sub('a'), b: sub('b') } });
   const results = await withSlowStorage(() =>

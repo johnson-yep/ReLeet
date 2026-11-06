@@ -26,6 +26,7 @@ test("an update drops v0.2's GitHub sync settings, state and alarms", async () =
   chrome.reset({ settings: { startTime: '08:00', owner: 'me', repo: 'r', token: 't' }, sync: { at: 1 } });
   alarms.set('github-sync', { name: 'github-sync' });
   alarms.set('after-submit:1', { name: 'after-submit:1' });
+  alarms.set('next-due', { name: 'next-due' });
   alarms.set('calendar-sync', { name: 'calendar-sync' });
   await migrateStoredData();
   const stored = chrome.dump();

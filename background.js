@@ -1,15 +1,16 @@
 import {
+  getCalendars,
+  getLeetCodeState,
+  getPendingMap,
   getProblemMap,
-  getProblem,
-  getPending,
   getSettings,
-  updateProblemMap,
-  onProblemsChanged,
   onPendingChanged,
+  onProblemsChanged,
   onSettingsChanged,
 } from './lib/storage.js';
-import { RATINGS, isDue, nextDueAfter, compareDue } from './lib/srs.js';
-import { ratePending } from './lib/rating.js';
+import { RATINGS, dayKey } from './lib/srs.js';
+import { master, ratePending, undo } from './lib/actions.js';
+import { computerRole, isActive, onRoleChanged, releaseMainComputer } from './lib/computer.js';
 import {
   SYNC_INTERVAL_MINUTES,
   detectionsToNotify,
@@ -19,26 +20,37 @@ import {
   recordAcceptedFromPage,
   setDetectedUsername,
 } from './lib/leetcode-sync.js';
-import { syncCalendars, connectCalendar, disconnectCalendar, refreshSchedule } from './lib/calendar-sync.js';
+import {
+  PROVIDER_NAMES,
+  syncCalendars,
+  connectCalendar,
+  disconnectCalendar,
+  refreshSchedule,
+} from './lib/calendar-sync.js';
 import { migrateStoredData } from './lib/migrate.js';
+import { ImportError, buildExport, mergeImport, parseExport } from './lib/transfer.js';
+import { forgetSecrets } from './lib/secret-box.js';
 
-const PERIODIC_ALARM = 'due-check';   // safety net in case a one-shot alarm is missed
-const NEXT_DUE_ALARM = 'next-due';    // fires exactly when the next problem becomes due
+const PERIODIC_ALARM = 'due-check'; // safety net: badge and daily summary, in case a one-shot alarm is missed
+const NEW_DAY_ALARM = 'new-day'; // local midnight: a new day's reviews are due
+const SUMMARY_ALARM = 'daily-summary'; // the start time
 const LEETCODE_ALARM = 'leetcode-sync';
 const CALENDAR_ALARM = 'calendar-sync'; // retries failed calendar updates
+const ALARMS = [PERIODIC_ALARM, NEW_DAY_ALARM, SUMMARY_ALARM, LEETCODE_ALARM, CALENDAR_ALARM];
 const CALENDAR_SYNC_MINUTES = 15;
-const REVIEW_NOTIFICATION_PREFIX = 'review:';
 const PENDING_NOTIFICATION = 'pending';
-const TEST_NOTIFICATION = 'test';
+const SUMMARY_NOTIFICATION = 'daily-summary';
+const SUMMARY_KEY = 'dailySummary'; // { sentDay }: the summary goes out at most once a day
+const UNDO_MS = 15 * 1000; // a little longer than the prompt shows Undo
 
 // Every listener is registered synchronously at the top level, so Chrome can
 // wake this worker for any of them. Nothing that must survive a restart is
 // kept in memory: it all lives in chrome.storage and alarms.
 
-// chrome.storage.local holds calendar sign-ins (the iCloud app-specific
-// password), and by default content scripts can read and write
-// it too. Ours only sends messages, so keep storage to ReLeet's own pages and
-// this worker. Chrome remembers the setting; older versions without it skip it.
+// chrome.storage.local holds the (encrypted) iCloud app-specific password, and
+// by default content scripts can read and write it too. Ours only sends
+// messages, so keep storage to ReLeet's own pages and this worker. Chrome
+// remembers the setting; older versions without it skip it.
 try {
   chrome.storage.local.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' })?.catch(() => {});
 } catch {}
@@ -46,10 +58,13 @@ try {
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   // Not for a Chrome update: the tabs' scripts are still running then.
   if (reason === 'install' || reason === 'update') addToOpenLeetCodeTabs();
+  if (reason === 'install') chrome.tabs.create({ url: chrome.runtime.getURL('welcome/welcome.html') }).catch(() => {});
   if (reason === 'update') await migrateStoredData();
   await init();
 });
 chrome.runtime.onStartup.addListener(init);
+// Another computer became the main one (or this one did): start or stop.
+onRoleChanged(() => init());
 
 // Chrome adds manifest content scripts only to pages loaded after an install
 // or update. A leetcode.com tab that was already open (people keep it open all
@@ -68,11 +83,23 @@ async function addToOpenLeetCodeTabs() {
   }
 }
 
+const active = async () => isActive(await computerRole());
+
+// Starts ReLeet's regular work on the main computer, or stops it on another
+// one (the data stays, for Export).
 async function init() {
-  await chrome.alarms.create(PERIODIC_ALARM, { periodInMinutes: 30 });
+  if (!(await active())) {
+    await Promise.all(ALARMS.map((name) => chrome.alarms.clear(name)));
+    await chrome.action.setBadgeText({ text: '' });
+    return;
+  }
+  await ensurePeriodicAlarm(PERIODIC_ALARM, 30);
   await ensurePeriodicAlarm(CALENDAR_ALARM, CALENDAR_SYNC_MINUTES);
-  await scheduleLeetCodeSync(await getSettings());
-  await checkDue();
+  const settings = await getSettings();
+  await scheduleLeetCodeSync(settings);
+  await scheduleNewDay();
+  await updateBadge();
+  await checkDailySummary();
   syncCalendars();
 }
 
@@ -91,47 +118,106 @@ async function scheduleLeetCodeSync(settings) {
   await ensurePeriodicAlarm(LEETCODE_ALARM, SYNC_INTERVAL_MINUTES);
 }
 
+function nextMidnight(now = Date.now()) {
+  const d = new Date(now);
+  d.setHours(24, 0, 0, 0);
+  return d.getTime();
+}
+
+async function scheduleNewDay() {
+  await chrome.alarms.create(NEW_DAY_ALARM, { when: nextMidnight() });
+}
+
 // Only these settings move calendar blocks or change what's written to them.
 function scheduleSettingsChanged(next, prev) {
   return (
     next.startTime !== prev.startTime ||
+    next.dailyLimit !== prev.dailyLimit ||
     next.reminderMinutes !== prev.reminderMinutes ||
     RATINGS.some((r) => next.durations[r] !== prev.durations[r])
   );
 }
 
 onSettingsChanged(async (next, prev) => {
+  if (!(await active())) return;
   if (leetcodeUsername(next) !== leetcodeUsername(prev)) {
     await scheduleLeetCodeSync(next);
     // A new username starts with a baseline, so its past solves aren't queued.
     if (leetcodeUsername(next)) runLeetCodeSync(syncLeetCode);
   }
-  if (scheduleSettingsChanged(next, prev)) syncCalendars();
+  if (scheduleSettingsChanged(next, prev)) {
+    syncCalendars();
+    updateBadge();
+  }
+  if (next.startTime !== prev.startTime || next.dailySummary !== prev.dailySummary) checkDailySummary();
 });
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === PERIODIC_ALARM || alarm.name === NEXT_DUE_ALARM) checkDue();
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (!(await active())) return;
+  if (alarm.name === PERIODIC_ALARM) {
+    updateBadge();
+    checkDailySummary();
+  }
+  if (alarm.name === NEW_DAY_ALARM) {
+    await scheduleNewDay();
+    updateBadge();
+    syncCalendars(); // missed reviews get their new blocks
+  }
+  if (alarm.name === SUMMARY_ALARM) checkDailySummary();
   if (alarm.name === LEETCODE_ALARM) runLeetCodeSync(syncLeetCode);
   if (alarm.name === CALENDAR_ALARM) syncCalendars();
 });
 
-// Rated from the in-page prompt on leetcode.com. The answer carries the
-// review's calendar block, so only the planning step is awaited here. Saving
-// the problem also starts a full calendar sync (onProblemsChanged), whose
-// network calls shouldn't hold up the prompt.
-async function rateFromPage({ id, rating }) {
-  const problem = await ratePending(id, rating);
-  if (!problem) return { status: 'gone' };
-  const schedule = await refreshSchedule();
-  return { status: 'ok', dueAt: problem.dueAt, slot: schedule.entries[problem.id] ?? null };
+// ---- The in-page prompt ----------------------------------------------------------
+
+// Undo for a rating or Mastered made on the page. The page gets a token; the
+// change itself waits here (in session storage, which a restart clears).
+async function rememberUndo(id, change) {
+  const token = crypto.randomUUID();
+  await chrome.storage.session.set({ [`undo:${token}`]: { id, change, until: Date.now() + UNDO_MS } });
+  return token;
 }
 
-// The content script on leetcode.com may only report solves and ratings.
-// Everything else (calendar sign-in, imports) comes from ReLeet's own pages.
+async function undoFromPage({ token }) {
+  const key = `undo:${token}`;
+  const { [key]: saved } = await chrome.storage.session.get(key);
+  await chrome.storage.session.remove(key);
+  if (!saved || saved.until < Date.now()) return { status: 'expired' };
+  return { status: (await undo(saved.id, saved.change)) ? 'ok' : 'changed' };
+}
+
+// Rated from the in-page prompt. The answer carries the review's day and block,
+// so only the planning step is awaited here. Saving the problem also starts a
+// full calendar sync (onProblemsChanged), whose network calls shouldn't hold
+// up the prompt.
+async function rateFromPage({ id, rating }) {
+  const change = await ratePending(id, rating);
+  if (!change) return { status: 'gone' };
+  const slot = (await refreshSchedule()).entries[id] ?? null;
+  return {
+    status: 'ok',
+    day: slot?.day ?? change.after.problem.dueDay,
+    start: slot?.start ?? null,
+    capped: change.capped,
+    undoToken: await rememberUndo(id, change),
+  };
+}
+
+async function masterFromPage({ id }) {
+  const change = await master(id);
+  if (!change) return { status: 'gone' };
+  return { status: 'ok', undoToken: await rememberUndo(id, change) };
+}
+
+// The content script on leetcode.com may only report solves and act on its
+// prompt. Everything else (calendar sign-in, imports) comes from ReLeet's own
+// pages. On a computer that isn't the main one, the page gets 'idle' and shows nothing.
 const PAGE_HANDLERS = {
   'leetcode-user': (m) => setDetectedUsername(m.username),
   'leetcode-accepted': (m) => recordAcceptedFromPage(m.submission ?? {}),
   'rate-pending': rateFromPage,
+  'master-pending': masterFromPage,
+  undo: undoFromPage,
 };
 
 const EXTENSION_HANDLERS = {
@@ -143,7 +229,20 @@ const EXTENSION_HANDLERS = {
   'calendar-disconnect': (m) => disconnectCalendar(m.provider, { force: Boolean(m.force) }),
   'calendar-sync-now': syncCalendars,
   'test-notification': testNotification,
+  'export-data': exportData,
+  'import-data': (m) => importData(m.data),
+  'delete-all-data': (m) => deleteAllData({ force: Boolean(m.force) }),
 };
+
+// Work only the main computer does. Export, Import and Delete work anywhere.
+const ACTIVE_ONLY = new Set([
+  ...Object.keys(PAGE_HANDLERS),
+  'sync-now',
+  'sync-if-stale',
+  'import-recent',
+  'calendar-connect',
+  'calendar-sync-now',
+]);
 
 function fromExtensionPage(sender) {
   return sender.id === chrome.runtime.id && Boolean(sender.url?.startsWith(chrome.runtime.getURL('')));
@@ -154,21 +253,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handler = Object.hasOwn(handlers, message?.type) ? handlers[message.type] : null;
   if (!handler) return false;
   Promise.resolve()
-    .then(() => handler(message))
+    .then(async () => {
+      if (ACTIVE_ONLY.has(message.type) && !(await active())) return { status: 'idle' };
+      return handler(message);
+    })
     .then(sendResponse, (e) => sendResponse({ status: 'error', error: e?.message ?? String(e) }));
   return true; // keep the channel open for the async response
 });
 
-// Any change to problems (popup add/review/delete, a rating) reschedules
-// alarms, the badge and the calendar blocks.
-onProblemsChanged(async (problems) => {
+// Any change to problems (a rating, Mastered, Stop tracking) or to the solves
+// waiting to be rated reschedules the calendar blocks and the badge.
+onProblemsChanged(async () => {
+  if (!(await active())) return;
   syncCalendars();
-  await scheduleNextDue(problems);
   updateBadge();
-  if (problems.some((p) => isDue(p) && p.notifiedFor !== p.dueAt)) checkDue();
 });
 
-onPendingChanged(() => updateBadge());
+onPendingChanged(async () => {
+  if (await active()) updateBadge();
+});
 
 // Solves found by the background check raise a notification. Ones detected on
 // the page don't: the in-page prompt already asked. Never rejects, so alarm
@@ -210,79 +313,78 @@ function notifyPending(detected) {
   });
 }
 
-async function checkDue() {
-  const now = Date.now();
-  let problems = [];
-  let due = [];
+// ---- Due today: the badge and the daily summary ---------------------------------
 
-  // notifiedFor remembers which due date we already notified about, so each
-  // scheduled review notifies once and rescheduling naturally re-arms it.
-  // Marked under the storage lock, so a rating saved meanwhile isn't undone.
-  await updateProblemMap((map) => {
-    problems = Object.values(map);
-    due = problems.filter((p) => isDue(p, now) && p.notifiedFor !== p.dueAt);
-    for (const p of due) map[p.id] = { ...p, notifiedFor: p.dueAt };
-    return due.length ? map : null; // a write triggers onProblemsChanged → reschedule
-  });
-  for (const p of due) notifyReview(p);
-
-  await scheduleNextDue(problems);
-  updateBadge();
+// Reviews booked for today (overdue ones booked again today included).
+async function dueToday(now = Date.now()) {
+  const plan = await refreshSchedule(now);
+  const today = dayKey(now);
+  return Object.values(plan.entries).filter((slot) => slot.day <= today);
 }
 
-function notifyReview(problem) {
-  chrome.notifications.create(REVIEW_NOTIFICATION_PREFIX + problem.id, {
+// Reviews due today plus solves waiting to be rated, each problem counted once.
+async function updateBadge() {
+  const [due, pending] = await Promise.all([dueToday(), getPendingMap()]);
+  const count = new Set([...due.map((slot) => slot.problemId), ...Object.keys(pending)]).size;
+  await chrome.action.setBadgeText({ text: count ? String(count) : '' });
+  await chrome.action.setBadgeBackgroundColor({ color: '#e5484d' });
+}
+
+// Today at the start time, local.
+function startTimeOn(now, settings) {
+  const [hours, minutes] = String(settings.startTime ?? '09:00').split(':').map(Number);
+  const d = new Date(now);
+  d.setHours(Number.isFinite(hours) ? hours : 9, Number.isFinite(minutes) ? minutes : 0, 0, 0);
+  return d.getTime();
+}
+
+const reviewsText = (n) => `${n} review${n === 1 ? '' : 's'} due today`;
+
+// One notification at the start time: "5 reviews due today". At most once a
+// day, and none when nothing is due. If Chrome wasn't running at the start
+// time, it comes when it starts.
+async function checkDailySummary(now = Date.now()) {
+  const settings = await getSettings();
+  const start = startTimeOn(now, settings);
+  if (now < start) {
+    await chrome.alarms.create(SUMMARY_ALARM, { when: start });
+    return;
+  }
+  const tomorrow = new Date(start);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  await chrome.alarms.create(SUMMARY_ALARM, { when: tomorrow.getTime() });
+  if (!settings.dailySummary) return;
+
+  const today = dayKey(now);
+  const { [SUMMARY_KEY]: state } = await chrome.storage.local.get(SUMMARY_KEY);
+  if (state?.sentDay === today) return;
+  await chrome.storage.local.set({ [SUMMARY_KEY]: { sentDay: today } });
+  const due = await dueToday(now);
+  if (due.length) notifySummary(due.length);
+}
+
+function notifySummary(count, contextMessage = 'Click to see them.') {
+  chrome.notifications.create(SUMMARY_NOTIFICATION, {
     type: 'basic',
     iconUrl: 'icons/icon128.png',
-    title: 'Time to review',
-    message: problem.title,
-    contextMessage: `Last rated ${problem.rating}. Click to open the problem.`,
-    priority: 2,
+    title: reviewsText(count),
+    message: count ? 'Your review blocks are in the ReLeet popup.' : 'Nothing to review right now.',
+    contextMessage,
+    priority: 1,
   });
 }
 
-// Settings → "Send a test notification": what a due review looks like (for
-// the problem due soonest), without touching its due date or calendar block.
+// Settings → "Send a test notification": today's summary as it stands now,
+// without counting as today's.
 async function testNotification() {
-  const [next] = Object.values(await getProblemMap()).sort(compareDue);
-  if (next) {
-    notifyReview(next);
-  } else {
-    chrome.notifications.create(TEST_NOTIFICATION, {
-      type: 'basic',
-      iconUrl: 'icons/icon128.png',
-      title: 'Time to review',
-      message: 'Notifications from ReLeet work.',
-      contextMessage: 'Reviews you track will look like this when they are due.',
-      priority: 2,
-    });
-  }
-  return { status: 'ok', problem: next?.title ?? null };
-}
-
-async function scheduleNextDue(problems) {
-  const next = nextDueAfter(problems);
-  if (next === null) await chrome.alarms.clear(NEXT_DUE_ALARM);
-  else await chrome.alarms.create(NEXT_DUE_ALARM, { when: next });
-}
-
-// Badge counts everything needing attention: due reviews plus unrated submissions.
-async function updateBadge() {
-  const [map, pending] = await Promise.all([getProblemMap(), getPending()]);
-  const count = Object.values(map).filter((p) => isDue(p)).length + pending.length;
-  chrome.action.setBadgeText({ text: count ? String(count) : '' });
-  chrome.action.setBadgeBackgroundColor({ color: '#e5484d' });
+  const count = (await dueToday()).length;
+  notifySummary(count, 'This is a test. ReLeet sends this at your start time.');
+  return { status: 'ok', count };
 }
 
 chrome.notifications.onClicked.addListener(async (notificationId) => {
   chrome.notifications.clear(notificationId);
-  if (notificationId === PENDING_NOTIFICATION) {
-    await openPendingList();
-    return;
-  }
-  if (!notificationId.startsWith(REVIEW_NOTIFICATION_PREFIX)) return;
-  const problem = await getProblem(notificationId.slice(REVIEW_NOTIFICATION_PREFIX.length));
-  if (problem?.url) chrome.tabs.create({ url: problem.url });
+  if (notificationId === PENDING_NOTIFICATION || notificationId === SUMMARY_NOTIFICATION) await openPopup();
 });
 
 // The toolbar popup only opens in a focused Chrome window, and clicking a
@@ -290,7 +392,7 @@ chrome.notifications.onClicked.addListener(async (notificationId) => {
 // one. So focus the last window first. If the popup still can't open (Chrome
 // before 127, no window, focus refused), show the same page in a tab, so the
 // click always leads to the list.
-async function openPendingList() {
+async function openPopup() {
   try {
     const win = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
     await chrome.windows.update(win.id, { focused: true });
@@ -298,4 +400,68 @@ async function openPendingList() {
   } catch {
     await chrome.tabs.create({ url: chrome.runtime.getURL('popup/popup.html?tab') }).catch(() => {});
   }
+}
+
+// ---- Export, Import, Delete ---------------------------------------------------------
+
+async function exportData() {
+  const [problems, pending, settings, leetcode, calendars] = await Promise.all([
+    getProblemMap(),
+    getPendingMap(),
+    getSettings(),
+    getLeetCodeState(),
+    getCalendars(),
+  ]);
+  return { status: 'ok', data: buildExport({ problems, pending, settings, leetcode, calendars }) };
+}
+
+// Runs where calendar syncs can't interleave (the worker writes the calendars key).
+async function importData(data) {
+  let imported;
+  try {
+    imported = parseExport(data);
+  } catch (e) {
+    if (e instanceof ImportError) return { status: 'error', error: e.message };
+    throw e;
+  }
+  const [problems, pending, leetcode, calendars] = await Promise.all([
+    getProblemMap(),
+    getPendingMap(),
+    getLeetCodeState(),
+    getCalendars(),
+  ]);
+  const merged = mergeImport({ problems, pending, leetcode, calendars }, imported);
+  await chrome.storage.local.set({
+    problems: merged.problems,
+    pending: merged.pending,
+    settings: merged.settings,
+    leetcode: merged.leetcode,
+    calendars: merged.calendars,
+  });
+  return {
+    status: 'ok',
+    problems: Object.keys(imported.problems).length,
+    added: merged.added,
+    calendars: Object.keys(imported.calendars).filter((name) => !calendars[name]?.connected),
+  };
+}
+
+// "Delete all my ReLeet data": the ReLeet calendars in connected accounts
+// first (that needs the sign-ins), then everything stored in this browser.
+// `force` goes ahead when a calendar couldn't be deleted, leaving it behind.
+async function deleteAllData({ force = false } = {}) {
+  const calendars = await getCalendars();
+  const failed = [];
+  for (const name of PROVIDER_NAMES.filter((n) => calendars[n]?.connected)) {
+    const result = await disconnectCalendar(name);
+    if (result.status !== 'disconnected') failed.push({ provider: name, error: result.error });
+  }
+  if (failed.length && !force) return { status: 'error', failed };
+  await releaseMainComputer();
+  await Promise.all(ALARMS.map((name) => chrome.alarms.clear(name)));
+  await chrome.storage.local.clear();
+  await chrome.storage.session.clear();
+  await forgetSecrets();
+  await chrome.action.setBadgeText({ text: '' });
+  return { status: 'deleted', leftBehind: failed.map((f) => f.provider) };
 }
