@@ -110,6 +110,18 @@ button[aria-disabled="true"] {
 
 .btn-danger { color: var(--hard-text); border-color: color-mix(in srgb, var(--hard) 50%, var(--border)); }
 
+/* A link that looks like a button (it opens a page). */
+.button-like {
+  display: inline-block;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  text-decoration: none;
+}
+.button-like:hover { text-decoration: none; border-color: var(--muted); }
+.button-like.btn-primary { color: var(--accent-fg); border-color: var(--accent); }
+
 /* Rating buttons: the same words and colours everywhere. */
 
 .rate {

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Welcome to ReLeet</title>
+  <link rel="stylesheet" href="../lib/ui.css">
+  <link rel="stylesheet" href="../options/options.css">
+  <link rel="stylesheet" href="welcome.css">
+</head>
+<body>
+  <main>
+    <header class="intro">
+      <div>
+        <h1>Welcome to ReLeet</h1>
+        <p class="lead">When you solve a problem on LeetCode, ReLeet asks how hard it felt and books time in your
+          calendar to review it again, a few days later or a few months, depending on your answer.</p>
+      </div>
+      <!-- A picture of the in-page prompt, drawn with the same styles. -->
+      <figure class="prompt-picture" role="img" aria-label="ReLeet's prompt on leetcode.com: Accepted: Two Sum. How hard did it feel? Easy, Okay or Hard.">
+        <div class="card" aria-hidden="true">
+          <p class="brand"><span>ReLeet</span><span>Alt+Shift+R</span></p>
+          <p class="picture-title"><span class="ok">✓ Accepted:</span> Two Sum</p>
+          <p class="muted">How hard did it feel?</p>
+          <div class="ratings">
+            <span class="rate easy">Easy <span class="days">· 7d</span></span>
+            <span class="rate okay">Okay <span class="days">· 3d</span></span>
+            <span class="rate hard">Hard <span class="days">· 1d</span></span>
+          </div>
+          <p class="picture-footer muted"><span>Mastered — stop reviewing</span><span>Later</span></p>
+        </div>
+        <figcaption class="muted">This appears on leetcode.com right after an accepted solve.</figcaption>
+      </figure>
+    </header>
+
+    <ol class="steps">
+      <li id="step-leetcode">
+        <h2>Sign in to LeetCode</h2>
+        <p class="muted">ReLeet finds out who you are from leetcode.com, so it can notice your solves.</p>
+        <div class="button-row">
+          <a id="open-leetcode" class="button-like" href="https://leetcode.com/accounts/login/" target="_blank" rel="noopener">Open LeetCode</a>
+        </div>
+        <p id="leetcode-status" class="status muted" role="status">Waiting for you to sign in…</p>
+      </li>
+
+      <li id="step-import">
+        <h2>Import your recent solves</h2>
+        <p class="muted">Up to 20 of your latest accepted problems go to the ReLeet popup, for you to rate.
+          You can skip this.</p>
+        <div class="button-row">
+          <button id="import" type="button" disabled>Import recent solves</button>
+        </div>
+        <p id="import-status" class="status muted" role="status"></p>
+      </li>
+
+      <li id="step-calendar">
+        <h2>Connect a calendar <span class="optional">(optional)</span></h2>
+        <p class="muted">ReLeet makes its own calendar named “ReLeet” and books each review there. Without one,
+          the ReLeet popup still shows what's due.</p>
+        <div id="calendar-cards"></div>
+      </li>
+
+      <li id="step-schedule">
+        <h2>When to review</h2>
+        <div class="field">
+          <label for="start-time">First review of the day starts at</label>
+          <div class="field-line">
+            <input id="start-time" type="time" required>
+            <span class="saved" data-for="start-time" aria-live="polite"></span>
+          </div>
+        </div>
+        <div class="field">
+          <label for="daily-limit">Daily limit</label>
+          <div class="field-line">
+            <input id="daily-limit" type="number" min="15" max="600" step="5" required aria-describedby="daily-limit-error">
+            <span class="unit">minutes a day</span>
+            <span class="saved" data-for="daily-limit" aria-live="polite"></span>
+          </div>
+          <p id="daily-limit-error" class="error hint" hidden></p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="finish">
+      <button id="done" type="button" class="btn-primary">Done, go to LeetCode</button>
+      <p class="muted">Everything stays in this browser. You can change all of this later in Settings.</p>
+    </div>
+  </main>
+  <script type="module" src="welcome.js"></script>
+</body>
+</html>

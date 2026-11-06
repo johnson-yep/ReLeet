@@ -3,75 +3,150 @@
 <head>
   <meta charset="utf-8">
   <title>ReLeet settings</title>
-  <link rel="stylesheet" href="../popup/popup.css">
+  <link rel="stylesheet" href="../lib/ui.css">
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
-  <h1>ReLeet settings</h1>
+  <main>
+    <h1>ReLeet settings</h1>
+    <p class="muted lead">Changes save as you make them.</p>
 
-  <section id="leetcode-section">
-    <h2>LeetCode</h2>
-    <p class="muted">When a submission on leetcode.com is Accepted, ReLeet asks right there how hard it felt.
-      It also checks your public recent accepted submissions every 15 minutes while Chrome is running,
-      which catches solves on other devices.</p>
-    <form id="username-form" class="inline-form">
-      <input id="username-input" type="text" placeholder="LeetCode username" autocomplete="off" spellcheck="false"
-        aria-label="LeetCode username">
-      <button type="submit">Save</button>
-    </form>
-    <p id="username-note" class="muted"></p>
-    <dl id="leetcode-info"></dl>
-    <div class="button-row">
-      <button id="sync-now" type="button">Check now</button>
-      <button id="import-recent" type="button">Import recent</button>
-    </div>
-    <p class="muted">The first check only notes what's already there, so past solves aren't queued.
-      <strong>Import recent</strong> adds your most recent accepted problems (about 20) that aren't tracked yet
-      to the popup for rating.</p>
-    <p id="leetcode-status" class="muted" role="status"></p>
-  </section>
+    <p id="idle-banner" class="card banner" hidden>
+      ReLeet is active on another computer, so this one doesn't check LeetCode or update calendars.
+      See <a href="#computer-section">This computer</a>.
+    </p>
 
-  <section id="calendars-section">
-    <h2>Calendars</h2>
-    <p class="muted">Each connected account gets its own calendar named “ReLeet” with a block for every upcoming
-      review, and a reminder before it. Re-rating a problem moves its block; deleting the problem deletes it.</p>
-    <div id="calendar-cards"></div>
-    <div class="button-row">
-      <button id="calendar-sync-now" type="button" hidden>Update calendars now</button>
-    </div>
-    <p id="calendar-sync-status" class="muted" role="status"></p>
-  </section>
-
-  <section id="schedule-section">
-    <h2>Schedule</h2>
-    <form id="schedule-form">
-      <div class="field-row">
-        <label for="start-time">First block of the day starts at</label>
-        <input id="start-time" type="time" required>
+    <section id="leetcode-section" aria-labelledby="leetcode-heading">
+      <h2 id="leetcode-heading">LeetCode</h2>
+      <p class="muted">When a submission on leetcode.com is accepted, ReLeet asks right there how hard it felt.
+        It also checks your recent accepted submissions every 15 minutes while Chrome is open, which catches
+        solves made on other devices.</p>
+      <div class="field">
+        <label for="username-input">LeetCode username</label>
+        <div class="field-line">
+          <input id="username-input" type="text" autocomplete="off" spellcheck="false" placeholder="Picked up when you visit leetcode.com">
+          <span class="saved" data-for="username-input" aria-live="polite"></span>
+        </div>
+        <p id="username-note" class="muted hint"></p>
       </div>
-      <fieldset class="field-row">
-        <legend>Block length by last rating</legend>
-        <label class="duration easy">Easy <input id="duration-easy" type="number" min="5" max="240" step="1" required> <span class="unit">min</span></label>
-        <label class="duration okay">Okay <input id="duration-okay" type="number" min="5" max="240" step="1" required> <span class="unit">min</span></label>
-        <label class="duration hard">Hard <input id="duration-hard" type="number" min="5" max="240" step="1" required> <span class="unit">min</span></label>
-      </fieldset>
-      <p class="field-row">Reminder: <span id="reminder-text"></span></p>
-      <button type="submit">Save</button>
-    </form>
-    <p class="muted">Reviews on the same day are placed back to back from the start time, every day including
-      weekends. Changing these moves upcoming blocks in connected calendars; blocks that already started stay
-      where they are.</p>
-    <p id="schedule-status" class="muted" role="status"></p>
-  </section>
+      <p id="last-check" class="muted"></p>
+      <div class="button-row">
+        <button id="sync-now" type="button">Check now</button>
+        <button id="import-recent" type="button">Import recent solves</button>
+      </div>
+      <p class="muted hint">Import recent solves adds your 20 most recent accepted problems that ReLeet doesn't
+        track yet to the popup, for you to rate.</p>
+      <p id="leetcode-status" class="muted" role="status"></p>
+    </section>
 
-  <section id="notifications-section">
-    <h2>Notifications</h2>
-    <p class="muted">ReLeet notifies you when a review is due, and when the background check finds a solve to rate.</p>
-    <div class="button-row">
-      <button id="test-notification" type="button">Send a test notification</button>
-    </div>
-    <p id="notification-status" class="muted" role="status"></p>
-  </section>
+    <section id="schedule-section" aria-labelledby="schedule-heading">
+      <h2 id="schedule-heading">Schedule</h2>
+      <div class="field">
+        <label for="start-time">First review of the day starts at</label>
+        <div class="field-line">
+          <input id="start-time" type="time" required>
+          <span class="saved" data-for="start-time" aria-live="polite"></span>
+        </div>
+      </div>
+      <div class="field">
+        <label for="daily-limit">Daily limit</label>
+        <div class="field-line">
+          <input id="daily-limit" type="number" min="15" max="600" step="5" required aria-describedby="daily-limit-hint daily-limit-error">
+          <span class="unit">minutes a day</span>
+          <span class="saved" data-for="daily-limit" aria-live="polite"></span>
+        </div>
+        <p id="daily-limit-hint" class="muted hint">Reviews that don't fit move to the next day with room.
+          A day always gets at least one review.</p>
+        <p id="daily-limit-error" class="error hint" hidden></p>
+      </div>
+      <fieldset class="field">
+        <legend>Time for one review, by its last rating</legend>
+        <div class="durations">
+          <label class="duration easy"><span>Easy</span> <input id="duration-easy" type="number" min="5" max="240" step="5" required> <span class="unit">min</span></label>
+          <label class="duration okay"><span>Okay</span> <input id="duration-okay" type="number" min="5" max="240" step="5" required> <span class="unit">min</span></label>
+          <label class="duration hard"><span>Hard</span> <input id="duration-hard" type="number" min="5" max="240" step="5" required> <span class="unit">min</span></label>
+          <span class="saved" data-for="durations" aria-live="polite"></span>
+        </div>
+        <p id="durations-error" class="error hint" hidden></p>
+      </fieldset>
+      <p class="field">Calendar reminder: <span id="reminder-text"></span></p>
+      <p class="muted hint">Reviews on the same day follow each other from the start time, weekends included.
+        A missed review is booked again, first in line on the next day with room. Changes here move upcoming
+        reviews in your calendars; ones that already started stay where they are.</p>
+    </section>
+
+    <section id="calendars-section" aria-labelledby="calendars-heading">
+      <h2 id="calendars-heading">Calendars</h2>
+      <p class="muted">Each connected account gets its own calendar named “ReLeet”, with time booked for every
+        review and a reminder before it. Rating a problem moves its review; stopping tracking deletes it.</p>
+      <div id="calendar-cards"></div>
+      <p id="no-calendars" class="muted" hidden>Without a calendar, the popup still shows when each review is due,
+        and its ⋯ menu can add a review to any calendar app.</p>
+      <div class="button-row">
+        <button id="calendar-sync-now" type="button" hidden>Update calendars now</button>
+      </div>
+      <p id="calendar-sync-status" class="muted" role="status"></p>
+    </section>
+
+    <section id="notifications-section" aria-labelledby="notifications-heading">
+      <h2 id="notifications-heading">Notifications</h2>
+      <label class="switch">
+        <input id="daily-summary" type="checkbox" role="switch" aria-describedby="daily-summary-hint">
+        <span>Daily summary</span>
+        <span class="saved" data-for="daily-summary" aria-live="polite"></span>
+      </label>
+      <p id="daily-summary-hint" class="muted hint">One notification at your start time that says how many reviews
+        are due that day. Solves ReLeet notices in the background still get their own notification.</p>
+      <div class="button-row">
+        <button id="test-notification" type="button">Send a test notification</button>
+      </div>
+      <p id="notification-status" class="muted" role="status"></p>
+    </section>
+
+    <section id="computer-section" aria-labelledby="computer-heading">
+      <h2 id="computer-heading">This computer</h2>
+      <p id="computer-status"></p>
+      <div id="computer-switch" class="button-row" hidden>
+        <button id="use-here" type="button">Use this computer instead</button>
+      </div>
+      <div id="computer-confirm" class="card" hidden>
+        <p>The other computer stops checking LeetCode and updating your calendars. Your problems stay there:
+          export them on that computer and import them here.</p>
+        <div class="button-row">
+          <button id="use-here-confirm" type="button" class="btn-primary">Use this computer</button>
+          <button id="use-here-cancel" type="button">Cancel</button>
+        </div>
+      </div>
+      <h3>Move ReLeet to another computer</h3>
+      <p class="muted">Export saves your problems, settings and calendar details to a file. Import it on the other
+        computer, then connect your calendars there again: ReLeet keeps using the same “ReLeet” calendar. The file
+        holds no passwords or sign-ins.</p>
+      <div class="button-row">
+        <button id="export" type="button">Export my data</button>
+        <button id="import" type="button">Import…</button>
+        <input id="import-file" type="file" accept="application/json,.json" hidden>
+      </div>
+      <p id="transfer-status" class="muted" role="status"></p>
+    </section>
+
+    <section id="privacy-section" aria-labelledby="privacy-heading">
+      <h2 id="privacy-heading">Privacy and your data</h2>
+      <ul class="plain-list">
+        <li>Your problems, ratings and settings stay in this browser. ReLeet has no server, sends nothing to its
+          developer, and has no analytics.</li>
+        <li>ReLeet reads your recent accepted solves from leetcode.com, using your public profile.</li>
+        <li>If you connect Google Calendar or Apple Calendar, ReLeet writes your reviews there: each one has the
+          problem's name and link.</li>
+        <li>Your Apple app-specific password is stored encrypted in this browser. Google sign-in is handled by
+          Chrome, and ReLeet never sees your Google password.</li>
+      </ul>
+      <div class="button-row">
+        <button id="delete-all" type="button" class="btn-danger">Delete all my ReLeet data</button>
+        <button id="delete-anyway" type="button" class="btn-danger" hidden>Delete anyway</button>
+      </div>
+      <p id="delete-status" class="muted" role="status"></p>
+    </section>
+  </main>
 
   <script type="module" src="options.js"></script>
 </body>

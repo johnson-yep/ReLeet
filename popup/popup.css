@@ -39,14 +39,6 @@ h2 {
 .notice p { margin: 0; }
 .notice p + p, .notice p + .button-row { margin-top: 8px; }
 
-.button-like {
-  display: inline-block;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 5px 10px;
-  text-decoration: none;
-}
-.button-like.btn-primary:hover { text-decoration: none; }
 
 /* Banners: a calendar that needs the user, LeetCode not connected. */
 .banner {

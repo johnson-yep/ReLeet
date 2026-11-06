@@ -1,78 +1,70 @@
-body {
-  width: auto;
-  max-width: 560px;
-  margin: 24px auto;
+:root { font-size: 14px; }
+
+main {
+  max-width: 600px;
+  margin: 32px auto 64px;
   padding: 0 16px;
-  font-size: 14px;
 }
 
-h1 { font-size: 20px; margin-bottom: 8px; }
-h2 { margin-top: 24px; }
-h3 { font-size: 14px; margin: 0; }
-
-.inline-form { display: flex; gap: 8px; }
-.inline-form button { padding: 6px 14px; white-space: nowrap; }
-a { color: var(--accent); }
-
-.button-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
-.button-row button, #schedule-form > button { padding: 6px 12px; }
-button:disabled { cursor: default; opacity: 0.55; }
-button:disabled:hover { border-color: var(--border); }
-
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }
-dt { color: var(--muted); }
-dd { margin: 0; overflow-wrap: anywhere; }
-
-.error { color: var(--hard-text); }
-.ok { color: var(--easy-text); }
-
-input[type="email"], input[type="time"], input[type="number"] {
-  font: inherit;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
-  color-scheme: light dark;
+h1 { font-size: 24px; margin: 0; }
+.lead { margin: 4px 0 20px; }
+h2 {
+  font-size: 18px;
+  margin: 0 0 6px;
 }
-
-.calendar-card {
-  margin: 10px 0;
-  padding: 12px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+h3 { font-size: 15px; margin: 18px 0 4px; }
+section {
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
 }
-.calendar-card.needs-attention { border-color: var(--medium); }
+section > p { margin: 6px 0; }
+
+.banner { border-color: var(--okay); background: color-mix(in srgb, var(--okay) 10%, var(--bg)); margin: 0 0 16px; }
+
+.field { margin: 14px 0 0; padding: 0; border: none; }
+.field > label, .field > legend { display: block; font-weight: 600; margin-bottom: 6px; padding: 0; }
+.field-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.field-line input[type="text"] { flex: 1 1 260px; max-width: 360px; }
+.field-line input[type="number"] { width: 84px; }
+.hint { margin: 6px 0 0; font-size: 13px; }
+.unit { color: var(--muted); }
+.saved { color: var(--easy-text); font-size: 13px; min-width: 3em; }
+
+.durations { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; }
+.duration { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.duration > span:first-child { color: var(--text); min-width: 3em; }
+.duration input { width: 72px; font-weight: normal; }
+.duration .unit { font-weight: normal; }
+
+.button-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 0; }
+.button-row button { padding: 6px 12px; }
+
+.switch { margin-top: 6px; font-weight: 600; }
+.switch .saved { font-weight: normal; }
+
+.plain-list { margin: 6px 0; padding-left: 20px; }
+.plain-list li + li { margin-top: 4px; }
+
+/* Calendar cards (calendar-cards.js), also on the welcome page. */
+.calendar-card { margin: 12px 0; }
+.calendar-card.needs-attention { border-color: var(--okay); }
 .calendar-card .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.calendar-card h3 { font-size: 15px; margin: 0; }
 .calendar-card p { margin: 6px 0 0; }
 .calendar-card .card-message:empty { margin: 0; }
-/* Focus lands on the heading while the card's buttons are disabled (options.js). */
+/* Focus lands on the heading while the card's buttons are disabled. */
 .calendar-card h3:focus { outline: none; }
 .calendar-card h3:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
-.calendar-card .button-row { margin-bottom: 0; }
-.calendar-card .fields { display: grid; gap: 6px; margin-top: 8px; }
+.calendar-card .button-row { margin-top: 10px; }
+.calendar-card .fields { display: grid; gap: 6px; margin-top: 10px; }
 .calendar-card .fields input { width: 100%; }
 .badge {
-  font-size: 11px;
-  padding: 1px 7px;
+  font-size: 12px;
+  padding: 1px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--muted);
   white-space: nowrap;
 }
 .badge.on { color: var(--easy-text); border-color: var(--easy); }
-.badge.warn { color: var(--medium-text); border-color: var(--medium); }
-
-#schedule-form { display: grid; gap: 10px; }
-.field-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0; }
-fieldset.field-row { border: none; padding: 0; }
-fieldset.field-row legend { padding: 0; margin-bottom: 6px; }
-.duration { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
-.duration input { width: 64px; font-weight: normal; }
-.duration.easy { color: var(--easy-text); }
-.duration.okay { color: var(--medium-text); }
-.duration.hard { color: var(--hard-text); }
-.duration .unit { color: var(--muted); font-weight: normal; }
-.setup-needed { color: var(--fg); }
-#schedule-form > button { justify-self: start; }
+.badge.warn { color: var(--okay-text); border-color: var(--okay); }
