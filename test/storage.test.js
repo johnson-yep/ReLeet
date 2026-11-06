@@ -101,3 +101,14 @@ test('withStorageLock uses Web Locks when the browser has them', async () => {
     else delete globalThis.navigator;
   }
 });
+
+test("undo still works when storage hands the problem back with its keys in another order", async () => {
+  const { ratePending, undo } = await import('../lib/actions.js');
+  chrome.reset({ pending: { a: { id: 'a', title: 'A', url: 'u', submittedAt: 1 } } });
+  const change = await ratePending('a', 'easy');
+  // Chrome's storage returns objects with sorted keys.
+  const sorted = (v) => JSON.parse(storage.canonicalJson(v));
+  chrome.reset({ problems: sorted(chrome.dump().problems), pending: {} });
+  assert.equal(await undo('a', change), true);
+  assert.ok(chrome.dump().pending.a);
+});

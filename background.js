@@ -360,11 +360,11 @@ async function checkDailySummary(now = Date.now()) {
   if (state?.sentDay === today) return;
   await chrome.storage.local.set({ [SUMMARY_KEY]: { sentDay: today } });
   const due = await dueToday(now);
-  if (due.length) notifySummary(due.length);
+  if (due.length) await notifySummary(due.length);
 }
 
 function notifySummary(count, contextMessage = 'Click to see them.') {
-  chrome.notifications.create(SUMMARY_NOTIFICATION, {
+  return chrome.notifications.create(SUMMARY_NOTIFICATION, {
     type: 'basic',
     iconUrl: 'icons/icon128.png',
     title: reviewsText(count),
@@ -378,7 +378,7 @@ function notifySummary(count, contextMessage = 'Click to see them.') {
 // without counting as today's.
 async function testNotification() {
   const count = (await dueToday()).length;
-  notifySummary(count, 'This is a test. ReLeet sends this at your start time.');
+  await notifySummary(count, 'This is a test. ReLeet sends this at your start time.');
   return { status: 'ok', count };
 }
 
