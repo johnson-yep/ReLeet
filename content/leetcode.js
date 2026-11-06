@@ -616,7 +616,9 @@
         parts.push("That's the longest interval. ");
         actions.unshift(actionButton('Mark mastered', () => masterIt(current, { afterRating: true })), ' · ');
       }
-      finish(current, [...parts, ...actions], res.undoToken);
+      // What undoing a later "Mark mastered" goes back to.
+      current.rated = { content: [...parts, ...actions], undoToken: res.undoToken };
+      finish(current, current.rated.content, res.undoToken);
     } else if (res?.status === 'gone') {
       finish(current, ['Already rated in ReLeet.']);
     } else {
@@ -631,6 +633,7 @@
     const res = await send({ type: 'master-pending', id: current.pendingId });
     if (current !== prompt) return;
     if (res?.status === 'ok') {
+      current.undoesTo = afterRating ? current.rated : null;
       finish(current, [strong('Mastered.'), ` No more reviews of ${current.title}. `, undoButton(current)], res.undoToken);
     } else if (res?.status === 'gone' && !afterRating) {
       finish(current, ['Already rated in ReLeet.']);
@@ -650,7 +653,12 @@
     current.busy = true;
     const res = await send({ type: 'undo', token });
     if (current !== prompt) return;
-    if (res?.status === 'ok') {
+    if (res?.status === 'ok' && current.undoesTo) {
+      // Mastered after a rating: back to that rating's confirmation, whose Undo still works.
+      const { content, undoToken } = current.undoesTo;
+      current.undoesTo = null;
+      finish(current, content, undoToken);
+    } else if (res?.status === 'ok') {
       // Back to asking, as before the rating.
       clearTimeout(current.hideTimer);
       const hadFocus = current.host.shadowRoot.activeElement !== null;

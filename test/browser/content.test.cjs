@@ -202,7 +202,7 @@ describe('content/leetcode.js', { concurrency: true }, () => {
       assert.equal((await t.ofType('leetcode-accepted')).length, 1);
 
       // Auto-hide about 10 s after the confirmation.
-      await t.waitFor(async () => (await t.prompt.count()) === 0, 7500, 'auto-hide');
+      await t.waitFor(async () => (await t.prompt.count()) === 0, 10000, 'auto-hide');
       assert.equal((await t.ofType('leetcode-user')).length, 1, 'username sent once');
       assert.deepEqual(t.errors, []);
     } finally {
@@ -459,6 +459,16 @@ describe('content/leetcode.js', { concurrency: true }, () => {
       await t.prompt.locator('.outcome button.action', { hasText: 'Mark mastered' }).click();
       await t.waitFor(async () => (await t.ofType('master-pending')).length, 3000, 'master-pending');
       await t.waitFor(async () => /^Mastered\./.test(await t.prompt.locator('.outcome').textContent()), 3000, 'mastered');
+      // Undoing Mastered goes back to the rating's confirmation, not to the buttons: the solve is rated.
+      await t.prompt.locator('.outcome button.action', { hasText: 'Undo' }).click();
+      await t.waitFor(async () => /^Saved: Easy\./.test(await t.prompt.locator('.outcome').textContent()), 3000, 'back to saved');
+      assert.deepEqual(await t.ofType('undo'), [{ type: 'undo', token: 'undo-master' }]);
+      assert.equal(await t.prompt.locator('.question').isVisible(), false);
+      // And that confirmation's Undo still undoes the rating.
+      await t.prompt.locator('.outcome button.action', { hasText: 'Undo' }).click();
+      await t.waitFor(async () => (await t.ofType('undo')).length === 2, 3000, 'second undo');
+      assert.deepEqual((await t.ofType('undo'))[1], { type: 'undo', token: 'u1' });
+      await t.waitFor(async () => await t.prompt.locator('.question').isVisible(), 3000, 'asking again');
     } finally {
       await t.context.close();
     }

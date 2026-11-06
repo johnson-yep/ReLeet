@@ -115,3 +115,27 @@ test('each install keeps one id; claiming and releasing the main computer', asyn
   await computer.releaseMainComputer();
   assert.equal((await chrome.storage.sync.get('mainComputer')).mainComputer.id, 'elsewhere');
 });
+
+test('a copy that has been idle stays idle when the main computer gives up its claim', async () => {
+  chrome.reset({}, { sync: { mainComputer: { id: 'elsewhere' } } });
+  assert.equal(await computer.computerRole(), 'idle');
+  await computer.rememberIdle(5);
+  await chrome.storage.sync.remove('mainComputer'); // "Delete all" on the main computer
+  assert.equal(await computer.computerRole(), 'idle');
+  await computer.claimMainComputer();
+  assert.equal(await computer.computerRole(), 'main');
+  assert.equal(await computer.wasIdle(), true);
+  assert.equal(await computer.wasIdle(), false);
+  // A fresh copy with no claim anywhere runs, so its first rating can claim.
+  chrome.reset();
+  assert.equal(await computer.computerRole(), 'unclaimed');
+});
+
+test('the role is announced when this copy notes it went idle, not only when the claim changes', async () => {
+  chrome.reset();
+  const roles = [];
+  computer.onRoleChanged((role) => roles.push(role));
+  await computer.rememberIdle(1);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(roles, ['idle']);
+});

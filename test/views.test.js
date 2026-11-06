@@ -34,7 +34,7 @@ test('a tracked problem solved again shows once, under To rate, counted in due t
   assert.equal(v.toRate[1].problem.id, 'a');
   assert.equal(v.toRate[0].intervals.easy.days, 7); // not tracked yet
   assert.deepEqual(v.due.items.map((i) => i.problem.id), ['b']);
-  assert.equal(v.stats.dueToday, 2);
+  assert.equal(v.stats.dueToday, 1); // the same count as the Due today header
 });
 
 test('upcoming reviews are grouped by day, the next seven shown first', () => {

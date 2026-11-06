@@ -425,7 +425,7 @@ test('export leaves out every sign-in, and importing it on another computer merg
     connected: false,
     calendarId: appleState.calendarId,
     events: appleState.events,
-    checkStrays: false,
+    checkStrays: true,
     account: 'me@icloud.com',
     auth: { appleId: 'me@icloud.com' },
   });
@@ -493,4 +493,15 @@ test('a failed update migration still starts ReLeet', async () => {
     console.warn = warn;
   }
   assert.ok(alarms.has('calendar-sync'));
+});
+
+test('a computer that becomes the main one again checks its calendars for blocks it does not know', async () => {
+  const google = { connected: true, calendarId: 'g1', events: { a: { id: 'e', day: '2026-11-10', start: 1, end: 2, hash: 'h' } }, checkStrays: false };
+  const { chrome } = await startedWorker({ storage: { calendars: { google } }, sync: otherComputer });
+  assert.ok(chrome.dump().idleSince);
+  const { claimMainComputer } = await import('../lib/computer.js');
+  await claimMainComputer();
+  await settle();
+  assert.equal(chrome.dump().calendars.google.checkStrays, true);
+  assert.equal(chrome.dump().idleSince, undefined);
 });

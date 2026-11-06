@@ -981,7 +981,7 @@ test('forgetting a calendar on a computer that is not the main one deletes nothi
     connected: false,
     calendarId: before.calendarId,
     events: before.events,
-    checkStrays: false,
+    checkStrays: true,
     account: 'me@apple.test',
     auth: { appleId: 'me@icloud.com' },
   });
@@ -997,4 +997,19 @@ test('adopting imported calendars leaves a connected one alone', async () => {
   assert.deepEqual(stored('google'), google);
   assert.equal(stored('apple').calendarId, 'imported');
   assert.equal(stored('yahoo'), undefined);
+});
+
+test('marking calendars stale makes the next sync delete upcoming ReLeet events it does not know', async () => {
+  const sync = makeSync();
+  await setProblems(problem('two-sum', 'easy', 1));
+  await sync.connectCalendar('google');
+  const calendarId = stored('google').calendarId;
+  // Another computer added a block for the same review while this one was idle.
+  accounts.google.calendars.get(calendarId).set('theirs', { problemId: 'two-sum', start: at(1, 9), end: at(1, 9, 20) });
+  await sync.markCalendarsStale();
+  assert.equal(stored('google').checkStrays, true);
+  await sync.syncCalendars();
+  assert.equal(accounts.google.events().has('theirs'), false);
+  assert.equal(accounts.google.events().size, 1);
+  assert.equal(stored('google').checkStrays, false);
 });

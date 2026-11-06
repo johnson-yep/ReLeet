@@ -1129,3 +1129,31 @@ test('sync lifecycle: settings change and a missed review', () => {
   cal.apply(ops);
   assert.equal(cal.onCalendar.get(aEvent).start, time(1, 7));
 });
+
+test('a review done today keeps counting toward the limit, so the next one does not move into today', () => {
+  const ratedAt = time(-5, 9);
+  const a = problem('a', { due: day(0), rating: 'okay', ratedAt });
+  const b = problem('b', { due: day(0), rating: 'okay', ratedAt: ratedAt + 1 });
+  const c = problem('c', { due: day(0), rating: 'okay', ratedAt: ratedAt + 2 });
+  const morning = planSchedule(null, [a, b, c], limited(60), time(0, 8));
+  assert.deepEqual(Object.values(morning.entries).map((s) => s.day), [dayKey(day(0)), dayKey(day(1)), dayKey(day(2))]);
+
+  const reviewedA = recordReview(a, 'easy', { at: time(0, 9, 35) });
+  const later = planSchedule(morning, [reviewedA, b, c], limited(60), time(0, 9, 36));
+  assert.equal(later.entries.b.day, dayKey(day(1)));
+  assert.equal(later.entries.c.day, dayKey(day(2)));
+  assert.equal(later.entries.b.start, morning.entries.b.start);
+
+  // With room left today, the next review goes after the finished block, not over it.
+  const roomy = planSchedule(morning, [reviewedA, b, c], limited(90), time(0, 9, 36));
+  assert.equal(roomy.entries.b.day, dayKey(day(0)));
+  assert.ok(roomy.entries.b.start >= morning.entries.a.end, 'not over the finished block');
+});
+
+test('a problem whose review day is not a real date is left out instead of stalling the plan', () => {
+  const good = problem('good', { due: day(1) });
+  const bad = { ...problem('bad', { due: day(1) }), dueDay: 'soon' };
+  const odd = { ...problem('odd', { due: day(1) }), dueDay: '2026-02-30' };
+  const plan = planSchedule(null, [bad, odd, good, { ...bad, id: 'bad2' }, { ...bad, id: 'bad3' }], limited(30), time(0, 8));
+  assert.deepEqual(Object.keys(plan.entries), ['good']);
+});

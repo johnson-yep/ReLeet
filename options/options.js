@@ -41,6 +41,25 @@ async function save(key, patch) {
   showSaved(key);
 }
 
+// Number fields save once typing pauses (or the field changes), not on every
+// key: "60" would otherwise save 6 first, and every save moves calendar blocks.
+const pendingSaves = new Map();
+function saveSoon(key, makePatch) {
+  clearTimeout(pendingSaves.get(key)?.timer);
+  const run = () => {
+    pendingSaves.delete(key);
+    const patch = makePatch();
+    if (patch) save(key, patch);
+  };
+  pendingSaves.set(key, { run, timer: setTimeout(run, 700) });
+}
+function saveNow(key) {
+  const pending = pendingSaves.get(key);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  pending.run();
+}
+
 // ---- LeetCode ----------------------------------------------------------------
 
 const configuredUsername = () => String(settings?.leetcodeUsername ?? '').trim();
@@ -161,21 +180,28 @@ $('start-time').addEventListener('change', async () => {
   if (/^\d{2}:\d{2}$/.test(startTime)) await save('start-time', { startTime });
 });
 
-$('daily-limit').addEventListener('input', async () => {
+function dailyLimitPatch() {
   const error = checkMinutes($('daily-limit'), LIMITS.dailyLimit, 'The daily limit');
   showError('daily-limit-error', error);
-  if (!error) await save('daily-limit', { dailyLimit: Number($('daily-limit').value) });
+  return error ? null : { dailyLimit: Number($('daily-limit').value) };
+}
+$('daily-limit').addEventListener('input', () => {
+  dailyLimitPatch(); // the check shows at once
+  saveSoon('daily-limit', dailyLimitPatch);
 });
+$('daily-limit').addEventListener('change', () => saveNow('daily-limit'));
 
+function durationsPatch() {
+  const error = RATINGS.map((r) => checkMinutes($(`duration-${r}`), LIMITS.duration, 'Each review')).find(Boolean) ?? null;
+  showError('durations-error', error);
+  return error ? null : { durations: Object.fromEntries(RATINGS.map((r) => [r, Number($(`duration-${r}`).value)])) };
+}
 for (const rating of RATINGS) {
-  $(`duration-${rating}`).addEventListener('input', async () => {
-    const errors = RATINGS.map((r) => checkMinutes($(`duration-${r}`), LIMITS.duration, 'Each review'));
-    const error = errors.find(Boolean) ?? null;
-    showError('durations-error', error);
-    if (error) return;
-    const durations = Object.fromEntries(RATINGS.map((r) => [r, Number($(`duration-${r}`).value)]));
-    await save('durations', { durations });
+  $(`duration-${rating}`).addEventListener('input', () => {
+    durationsPatch();
+    saveSoon('durations', durationsPatch);
   });
+  $(`duration-${rating}`).addEventListener('change', () => saveNow('durations'));
 }
 
 // ---- Calendars ---------------------------------------------------------------

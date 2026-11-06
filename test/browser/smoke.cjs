@@ -517,7 +517,8 @@ async function step(name, fn) {
   });
 
   await step('the welcome page shows the detected username, and Done makes this the main computer', async () => {
-    await sw.evaluate(() => chrome.storage.sync.remove('mainComputer'));
+    // As on a fresh install: nobody holds the claim, and this copy has never been idle.
+    await sw.evaluate(() => Promise.all([chrome.storage.sync.remove('mainComputer'), chrome.storage.local.remove('idleSince')]));
     const welcome = await ctx.newPage();
     watchPage(welcome, 'welcome');
     await welcome.setViewportSize({ width: 900, height: 1300 });

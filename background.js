@@ -11,7 +11,7 @@ import {
 } from './lib/storage.js';
 import { RATINGS, dayKey } from './lib/srs.js';
 import { master, ratePending, undo } from './lib/actions.js';
-import { computerRole, isActive, onRoleChanged, releaseMainComputer } from './lib/computer.js';
+import { computerRole, isActive, onRoleChanged, releaseMainComputer, rememberIdle, wasIdle } from './lib/computer.js';
 import {
   SYNC_INTERVAL_MINUTES,
   detectionsToNotify,
@@ -28,6 +28,7 @@ import {
   connectCalendar,
   disconnectCalendar,
   forgetCalendar,
+  markCalendarsStale,
   refreshSchedule,
 } from './lib/calendar-sync.js';
 import { migrateStoredData } from './lib/migrate.js';
@@ -93,10 +94,12 @@ const active = async () => isActive(await computerRole());
 // one (the data stays, for Export).
 async function init() {
   if (!(await active())) {
+    await rememberIdle();
     await Promise.all(ALARMS.map((name) => chrome.alarms.clear(name)));
     await chrome.action.setBadgeText({ text: '' });
     return;
   }
+  if (await wasIdle()) await markCalendarsStale();
   await ensurePeriodicAlarm(PERIODIC_ALARM, 30);
   await ensurePeriodicAlarm(CALENDAR_ALARM, CALENDAR_SYNC_MINUTES);
   const settings = await getSettings();

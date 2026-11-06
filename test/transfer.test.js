@@ -88,8 +88,38 @@ test('an imported calendar waits to be connected again; one connected here is le
     connected: false,
     calendarId: 'c1',
     events: {},
-    checkStrays: false,
+    checkStrays: true,
     account: null,
     auth: { appleId: 'me@icloud.com' },
   });
+});
+
+test('an import with a review day that is not a real date is refused', () => {
+  const bad = (dueDay) => parseExport({ format: 'releet-export', version: 1, problems: { x: { ...make('x'), dueDay } } });
+  assert.throws(() => bad('soon'), /missing something/);
+  assert.throws(() => bad('2026-02-30'), /missing something/);
+});
+
+test('imported settings keep only values Settings would save', () => {
+  const settings = {
+    startTime: '07:45',
+    dailyLimit: 90,
+    durations: { easy: 25, okay: 0, hard: '60', medium: 40 },
+    reminderMinutes: 10,
+    dailySummary: false,
+    leetcodeUsername: ' alice ',
+    leetcodeUsernameSource: 'manual',
+    token: 'secret',
+  };
+  assert.deepEqual(parseExport({ format: 'releet-export', version: 1, settings }).settings, {
+    startTime: '07:45',
+    dailyLimit: 90,
+    reminderMinutes: 10,
+    dailySummary: false,
+    leetcodeUsername: 'alice',
+    leetcodeUsernameSource: 'manual',
+    durations: { easy: 25 },
+  });
+  const wild = { startTime: '25:00', dailyLimit: 100000, durations: 'long', dailySummary: 'yes' };
+  assert.deepEqual(parseExport({ format: 'releet-export', version: 1, settings: wild }).settings, {});
 });

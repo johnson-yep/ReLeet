@@ -63,17 +63,31 @@ $('start-time').addEventListener('change', async () => {
   showSaved('start-time');
 });
 
-$('daily-limit').addEventListener('input', async () => {
+function checkDailyLimit() {
   const input = $('daily-limit');
   const value = Number(input.value);
   const ok = input.value !== '' && Number.isInteger(value) && value >= 15 && value <= 600;
   input.setAttribute('aria-invalid', String(!ok));
   $('daily-limit-error').hidden = ok;
   $('daily-limit-error').textContent = ok ? '' : 'The daily limit must be whole minutes from 15 to 600.';
-  if (!ok) return;
+  return ok ? value : null;
+}
+
+// Saved once typing pauses, like Settings: "120" shouldn't save 12 first.
+let limitTimer = null;
+async function saveDailyLimit() {
+  clearTimeout(limitTimer);
+  const value = checkDailyLimit();
+  if (value === null || value === settings.dailyLimit) return;
   settings = await updateSettings({ dailyLimit: value });
   showSaved('daily-limit');
+}
+$('daily-limit').addEventListener('input', () => {
+  checkDailyLimit();
+  clearTimeout(limitTimer);
+  limitTimer = setTimeout(saveDailyLimit, 700);
 });
+$('daily-limit').addEventListener('change', saveDailyLimit);
 
 // Finishing makes this the main computer, unless another one already is:
 // taking over needs the confirmation in Settings.
