@@ -46,6 +46,9 @@ _Avoid_: archived, done, graduated, deleted
 **Overdue**:
 A problem whose review day has passed without a review.
 
+**Streak**:
+The number of days in a row on which the user rated at least one solve or review.
+
 ### Noticing solves
 
 **In-page prompt**:
@@ -77,6 +80,10 @@ The time of day the first block of any day begins.
 **Daily limit**:
 The most review time ReLeet books on any one day; reviews beyond it move to a later day.
 _Avoid_: cap, budget
+
+**Daily summary**:
+The one notification at the start time that says how many reviews are due that day.
+_Avoid_: reminder (that's the calendar's alert before a block)
 
 ### Computers
 
