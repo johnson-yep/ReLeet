@@ -116,7 +116,9 @@ Chrome Sync installs ReLeet on every computer where you're signed in to Chrome, 
 computer where you use it. ReLeet is active on one main computer; copies elsewhere stay idle and offer
 **Use this computer instead** (see [ADR 0001](docs/adr/0001-one-main-computer.md)). To move, use
 **Settings → This computer → Export my data**, then **Import** on the other computer and connect your calendars
-there again. The export file holds no passwords or sign-ins.
+there again. The export file holds no passwords or sign-ins. On a computer that isn't the main one, **Disconnect** and **Delete all
+my ReLeet data** leave a ReLeet calendar the main computer may use in your account; they delete only one the main
+computer has replaced with its own.
 
 ## Limitations
 
