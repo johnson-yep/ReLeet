@@ -117,7 +117,7 @@ async function init() {
     await markCalendarsStale();
     await clearIdleNote();
   }
-  await publishCalendars(await getCalendars());
+  if ((await computerRole()) === 'main') await publishCalendars(await getCalendars());
   await ensurePeriodicAlarm(PERIODIC_ALARM, 30);
   await ensurePeriodicAlarm(CALENDAR_ALARM, CALENDAR_SYNC_MINUTES);
   const settings = await getSettings();
@@ -251,7 +251,7 @@ const EXTENSION_HANDLERS = {
   'sync-if-stale': () => runLeetCodeSync(syncIfStale),
   'import-recent': importRecent,
   'calendar-connect': (m) => connectCalendar(m.provider, m.credentials),
-  'calendar-disconnect': (m) => disconnectHere(m.provider, { force: Boolean(m.force) }),
+  'calendar-disconnect': (m) => disconnectHere(m.provider, { force: Boolean(m.force), keep: Boolean(m.keep) }),
   'calendar-sync-now': syncCalendars,
   'test-notification': testNotification,
   'export-data': exportData,
@@ -301,7 +301,7 @@ onPendingChanged(async () => {
 // Tells other computers which calendars are the main computer's (computer.js).
 // Writes only when an id changes, not on every event a sync stores.
 onCalendarsChanged(async (calendars) => {
-  if (await active()) await publishCalendars(calendars);
+  if ((await computerRole()) === 'main') await publishCalendars(calendars);
 });
 
 // Solves found by the background check raise a notification. Ones detected on
@@ -480,10 +480,11 @@ async function importData(data) {
 // On a computer that isn't the main one, a calendar the main computer also
 // uses (after Export / Import) is only forgotten here; one only this computer
 // used is deleted, but its Google grant, which the main computer shares, stays.
-async function disconnectHere(name, { force = false } = {}) {
+// `keep`: the page told the user the calendar stays, so it does.
+async function disconnectHere(name, { force = false, keep = false } = {}) {
   if (await active()) return disconnectCalendar(name, { force });
   const state = (await getCalendars())[name];
-  if (await mainComputerUses(name, state?.calendarId)) return forgetCalendar(name);
+  if (keep || (await mainComputerUses(name, state?.calendarId))) return forgetCalendar(name);
   return disconnectCalendar(name, { force, keepSignIn: true });
 }
 
@@ -509,5 +510,5 @@ async function deleteAllData({ force = false } = {}) {
   await chrome.storage.session.clear();
   await forgetSecrets();
   await chrome.action.setBadgeText({ text: '' });
-  return { status: 'deleted', leftBehind: [...failed.map((f) => f.provider), ...kept] };
+  return { status: 'deleted', leftBehind: failed.map((f) => f.provider), kept };
 }

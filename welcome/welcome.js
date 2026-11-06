@@ -89,9 +89,12 @@ $('daily-limit').addEventListener('input', () => {
   limitTimer = setTimeout(saveDailyLimit, 700);
 });
 $('daily-limit').addEventListener('change', saveDailyLimit);
-// Closing the tab right after typing doesn't fire change.
+// Closing the tab right after typing doesn't fire change, and the page is
+// gone before a save that reads first could write: write at once.
 addEventListener('pagehide', () => {
-  if (limitTimer) saveDailyLimit();
+  clearTimeout(limitTimer);
+  const value = checkDailyLimit();
+  if (value !== null && value !== settings.dailyLimit) chrome.storage.local.set({ settings: { ...settings, dailyLimit: value } });
 });
 
 // Finishing makes this the main computer, unless another one already is:

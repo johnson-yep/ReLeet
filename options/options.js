@@ -51,7 +51,7 @@ function saveSoon(key, makePatch) {
     const patch = makePatch();
     if (patch) save(key, patch);
   };
-  pendingSaves.set(key, { run, timer: setTimeout(run, 700) });
+  pendingSaves.set(key, { run, makePatch, timer: setTimeout(run, 700) });
 }
 function saveNow(key) {
   const pending = pendingSaves.get(key);
@@ -59,9 +59,14 @@ function saveNow(key) {
   clearTimeout(pending.timer);
   pending.run();
 }
-// Closing the tab right after typing doesn't fire change.
+// Closing the tab right after typing doesn't fire change, and the page is
+// gone before a save that reads first could write. So write at once, from the
+// settings this page already has.
 addEventListener('pagehide', () => {
-  for (const key of [...pendingSaves.keys()]) saveNow(key);
+  const patches = [...pendingSaves.values()].map(({ timer, makePatch }) => (clearTimeout(timer), makePatch()));
+  pendingSaves.clear();
+  const patch = Object.assign({}, ...patches.filter(Boolean));
+  if (Object.keys(patch).length) chrome.storage.local.set({ settings: { ...settings, ...patch } });
 });
 
 // ---- LeetCode ----------------------------------------------------------------
@@ -325,12 +330,9 @@ async function deleteAll(force) {
   const result = await send({ type: 'delete-all-data', force });
   if (result.status === 'deleted') {
     $('delete-anyway').hidden = true;
-    const left = !result.leftBehind?.length
-      ? ''
-      : role === 'idle'
-        ? ' A “ReLeet” calendar the other computer uses stays in your account.'
-        : ' The “ReLeet” calendar is still in your account: delete it there.';
-    setStatus(status, `All ReLeet data in this browser is deleted.${left}`, 'ok');
+    const kept = result.kept?.length ? ' A “ReLeet” calendar the other computer may use stays in your account.' : '';
+    const left = result.leftBehind?.length ? ' A “ReLeet” calendar ReLeet couldn\'t delete is still in your account: delete it there.' : '';
+    setStatus(status, `All ReLeet data in this browser is deleted.${kept}${left}`, 'ok');
     return;
   }
   if (result.failed?.length) {
@@ -351,8 +353,8 @@ $('delete-all').addEventListener('click', () => {
   // Kept as a dialog: this can't be undone.
   const calendars =
     role === 'idle'
-      ? 'ReLeet is active on another computer: a “ReLeet” calendar it also uses stays, and one only this ' +
-        'computer used is deleted. Then this deletes'
+      ? 'ReLeet is active on another computer. A “ReLeet” calendar stays in your account unless that computer ' +
+        'already has its own. Then this deletes'
       : 'This deletes the “ReLeet” calendars from your connected accounts, then';
   const ok = confirm(
     `Delete all your ReLeet data?\n\n${calendars} every problem, rating and setting in this browser. ` +

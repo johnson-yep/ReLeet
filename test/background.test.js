@@ -440,7 +440,7 @@ test('delete all clears this browser and the main-computer claim', async () => {
   const { chrome, send } = await startedWorker({ storage: { problems: { a: problem('a', 1) }, pending: { b: pendingSolve('b') } } });
   const { claimMainComputer } = await import('../lib/computer.js');
   await claimMainComputer();
-  assert.deepEqual(await send({ type: 'delete-all-data' }), { status: 'deleted', leftBehind: [] });
+  assert.deepEqual(await send({ type: 'delete-all-data' }), { status: 'deleted', leftBehind: [], kept: [] });
   await settle();
   const left = chrome.dump();
   assert.equal(left.problems, undefined);
@@ -472,7 +472,7 @@ test('on a computer that is not the main one, Disconnect and Delete all leave th
     assert.deepEqual(left.auth, { appleId: 'me@icloud.com' });
 
     await chrome.storage.local.set({ calendars: { apple } });
-    assert.deepEqual(await send({ type: 'delete-all-data' }), { status: 'deleted', leftBehind: ['apple'] });
+    assert.deepEqual(await send({ type: 'delete-all-data' }), { status: 'deleted', leftBehind: [], kept: ['apple'] });
     assert.deepEqual(requests, []);
     // Another computer's claim is never removed.
     assert.equal((await chrome.storage.sync.get('mainComputer')).mainComputer.id, 'some-other-computer');
@@ -526,10 +526,39 @@ test("on a computer that is not the main one, a calendar only it used is deleted
   }
 });
 
-test('the main computer publishes its calendar ids; an empty idle copy keeps no idle note', async () => {
+test('only the main computer publishes its calendar ids; an empty idle copy keeps no idle note', async () => {
   const google = { connected: true, calendarId: 'g1', events: {} };
   const main = await startedWorker({ storage: { calendars: { google } } });
+  // Unclaimed (before its first rating) it says nothing, so it can't overwrite the real main computer's list.
+  assert.equal((await main.chrome.storage.sync.get('mainCalendars')).mainCalendars, undefined);
+  const { claimMainComputer } = await import('../lib/computer.js');
+  await claimMainComputer();
+  await settle();
   assert.deepEqual((await main.chrome.storage.sync.get('mainCalendars')).mainCalendars, { google: 'g1' });
   const empty = await startedWorker({ sync: otherComputer });
   assert.equal(empty.chrome.dump().idleSince, undefined);
+});
+
+test('an idle computer keeps its calendar while the new main computer has none of its own yet (before Import)', async () => {
+  const apple = { connected: true, calendarId: 'https://p01-caldav.icloud.com/1/calendars/x/', events: {}, account: 'me@icloud.com', auth: { appleId: 'me@icloud.com', appPassword: 'x' } };
+  const realFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    requests.push(String(url));
+    throw new Error('offline');
+  };
+  try {
+    // The new main computer has just claimed and published an empty list.
+    const { send } = await startedWorker({ storage: { calendars: { apple } }, sync: { ...otherComputer, mainCalendars: {} } });
+    assert.deepEqual(await send({ type: 'delete-all-data' }), { status: 'deleted', leftBehind: [], kept: ['apple'] });
+    assert.deepEqual(requests, []);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('when the page said the calendar stays, the worker keeps it even if the list changed meanwhile', async () => {
+  const apple = { connected: true, calendarId: 'mine', events: {}, auth: { appleId: 'me@icloud.com' } };
+  const { send } = await startedWorker({ storage: { calendars: { apple } }, sync: { ...otherComputer, mainCalendars: { apple: 'theirs' } } });
+  assert.deepEqual(await send({ type: 'calendar-disconnect', provider: 'apple', keep: true }), { status: 'disconnected', keptCalendar: true });
 });

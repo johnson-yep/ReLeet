@@ -1170,3 +1170,20 @@ test('a problem whose review day is not a real date is left out instead of stall
   const plan = planSchedule(null, [bad, odd, good, { ...bad, id: 'bad2' }, { ...bad, id: 'bad3' }], limited(30), time(0, 8));
   assert.deepEqual(Object.keys(plan.entries), ['good']);
 });
+
+test('undoing a rating gives its finished block back to today', () => {
+  const a = problem('a', { due: day(0), rating: 'okay' });
+  const b = problem('b', { due: day(0), rating: 'okay', ratedAt: a.history[0].at + 1 });
+  const morning = planSchedule(null, [a, b], limited(100), time(0, 8));
+  assert.deepEqual(Object.values(morning.entries).map((s) => s.day), [dayKey(day(0)), dayKey(day(0))]);
+  const rated = planSchedule(morning, [recordReview(a, 'easy', { at: time(0, 8, 30) }), b], limited(100), time(0, 8, 30));
+  assert.equal(rated.doneToday.length, 1);
+  // Undo: a is back as it was, so its block is no longer done, and b keeps its day.
+  const undone = planSchedule(rated, [a, b], limited(100), time(0, 8, 31));
+  assert.equal(undone.doneToday, undefined);
+  assert.equal(undone.entries.a.day, dayKey(day(0)));
+  assert.equal(undone.entries.b.day, dayKey(day(0)));
+  // Rated again after the undo: still one block for a.
+  const again = planSchedule(undone, [recordReview(a, 'easy', { at: time(0, 8, 32) }), b], limited(100), time(0, 8, 32));
+  assert.equal(again.doneToday.length, 1);
+});

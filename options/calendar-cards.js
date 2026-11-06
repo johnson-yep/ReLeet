@@ -290,7 +290,7 @@ export function mountCalendarCards(container, { onRender = () => {}, isIdle = ()
         `${account || provider.accountFallback}. Your other calendars aren't touched.`;
     if (!force && !confirm(question)) return;
     setCard(name, { busy: 'disconnect', message: '', kind: '' });
-    const result = await send({ type: 'calendar-disconnect', provider: name, force });
+    const result = await send({ type: 'calendar-disconnect', provider: name, force, keep: shared });
     if (result.status === 'disconnected') {
       setCard(name, {
         busy: null,
