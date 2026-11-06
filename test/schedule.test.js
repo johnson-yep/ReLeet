@@ -15,7 +15,7 @@ const SETTINGS = Object.freeze({
   leetcodeUsername: 'someone',
   leetcodeUsernameSource: 'manual',
   startTime: '09:00',
-  durations: Object.freeze({ easy: 20, medium: 40, hard: 60 }),
+  durations: Object.freeze({ easy: 20, okay: 40, hard: 60 }),
   reminderMinutes: 15,
 });
 
@@ -43,7 +43,7 @@ const titleCase = (id) => id.split('-').map((w) => w[0].toUpperCase() + w.slice(
 const label = (rating) => rating[0].toUpperCase() + rating.slice(1);
 
 // A tracked problem due at local midnight of `due`, last rated at `ratedAt`.
-function problem(id, { due, rating = 'medium', ratedAt = due - 3 * DAY, title = titleCase(id), url } = {}) {
+function problem(id, { due, rating = 'okay', ratedAt = due - 3 * DAY, title = titleCase(id), url } = {}) {
   return {
     id,
     title,
@@ -154,11 +154,11 @@ test('layoutKey changes with the start time and each duration, and nothing else'
   assert.equal(layoutKey(withSettings({ leetcodeUsername: 'other', leetcodeUsernameSource: 'auto' })), base);
   assert.notEqual(layoutKey(withSettings({ startTime: '09:30' })), base);
   assert.notEqual(layoutKey(withSettings({ durations: { easy: 25 } })), base);
-  assert.notEqual(layoutKey(withSettings({ durations: { medium: 45 } })), base);
+  assert.notEqual(layoutKey(withSettings({ durations: { okay: 45 } })), base);
   assert.notEqual(layoutKey(withSettings({ durations: { hard: 90 } })), base);
   // Same layout written differently is the same layout.
   assert.equal(layoutKey(withSettings({ startTime: '9:00' })), base);
-  assert.equal(layoutKey(withSettings({ durations: { easy: '20', medium: '40', hard: '60' } })), base);
+  assert.equal(layoutKey(withSettings({ durations: { easy: '20', okay: '40', hard: '60' } })), base);
   // Missing settings fall back to the defaults.
   assert.equal(layoutKey({}), base);
   assert.equal(layoutKey(undefined), base);
@@ -195,13 +195,13 @@ test('places a single upcoming review at the start time on its due day', () => {
     entries: { 'two-sum': slot(p, time(1, 9), 40) },
   });
   assert.equal(plan.entries['two-sum'].day, dayKey(day(1)));
-  assert.equal(plan.entries['two-sum'].description, `Review Two Sum (last rated Medium).\nhttps://leetcode.com/problems/two-sum/\n\nScheduled by ReLeet.`);
+  assert.equal(plan.entries['two-sum'].description, `Review Two Sum (last rated Okay).\nhttps://leetcode.com/problems/two-sum/\n\nScheduled by ReLeet.`);
 });
 
 test('stacks several reviews on one day back-to-back, each day from its start time', () => {
   const ratedAt = time(-2, 12);
   const problems = [
-    problem('charlie', { due: day(1), rating: 'medium', ratedAt }),
+    problem('charlie', { due: day(1), rating: 'okay', ratedAt }),
     problem('alpha', { due: day(1), rating: 'hard', ratedAt }),
     problem('bravo', { due: day(1), rating: 'easy', ratedAt }),
     problem('delta', { due: day(2), rating: 'easy', ratedAt }),
@@ -223,7 +223,7 @@ test('orders same-day reviews by due time, then last rating time, then id', () =
   const t1 = time(-4, 10);
   const t2 = time(-3, 10);
   const alpha = problem('alpha', { due: day(1), ratedAt: t2 });
-  alpha.history = [{ at: t0, rating: 'medium', commitSha: null }, { at: t2, rating: 'medium', commitSha: null }];
+  alpha.history = [{ at: t0, rating: 'okay', commitSha: null }, { at: t2, rating: 'okay', commitSha: null }];
   const problems = [
     alpha, // first id and earliest first rating, but its last rating is the latest
     problem('yankee', { due: day(1), ratedAt: t1 }),
@@ -239,8 +239,8 @@ test('the plan does not depend on the order problems are given in', () => {
   const problems = [
     problem('a', { due: day(1), rating: 'easy', ratedAt: time(-1, 9) }),
     problem('b', { due: day(1), rating: 'hard', ratedAt: time(-1, 9) }),
-    problem('c', { due: day(1), rating: 'medium', ratedAt: time(-2, 9) }),
-    problem('d', { due: day(2), rating: 'medium', ratedAt: time(-1, 9) }),
+    problem('c', { due: day(1), rating: 'okay', ratedAt: time(-2, 9) }),
+    problem('d', { due: day(2), rating: 'okay', ratedAt: time(-1, 9) }),
     problem('e', { due: day(2), rating: 'easy', ratedAt: time(-1, 9) }),
     problem('f', { due: day(0), rating: 'hard', ratedAt: time(-1, 9) }),
   ];
@@ -258,12 +258,12 @@ test('the plan does not depend on the order problems are given in', () => {
 
 test('keeps existing blocks and first-fits new ones into the gaps around them', () => {
   const due = day(1);
-  const a = problem('kept-a', { due, rating: 'medium', ratedAt: time(-3, 9) });
+  const a = problem('kept-a', { due, rating: 'okay', ratedAt: time(-3, 9) });
   const b = problem('kept-b', { due, rating: 'easy', ratedAt: time(-3, 9) });
   // Free on day 1: 09:00–09:40 (40 min), 10:20–10:40 (20 min), from 11:00.
   const prev = schedule([slot(a, time(1, 9, 40), 40), slot(b, time(1, 10, 40), 20)]);
   const x = problem('new-x', { due, rating: 'hard', ratedAt: time(-2, 9) });
-  const y = problem('new-y', { due, rating: 'medium', ratedAt: time(-2, 10) });
+  const y = problem('new-y', { due, rating: 'okay', ratedAt: time(-2, 10) });
   const z = problem('new-z', { due, rating: 'easy', ratedAt: time(-2, 11) });
 
   const plan = planSchedule(prev, [z, y, x, b, a], SETTINGS, time(0, 8));
@@ -291,7 +291,7 @@ test('kept blocks pick up a new title, url and reminder without moving', () => {
 });
 
 test('a started block is frozen but still picks up the new rating', () => {
-  const p = problem('lru-cache', { due: day(0), rating: 'medium' });
+  const p = problem('lru-cache', { due: day(0), rating: 'okay' });
   const prev = schedule([slot(p, time(0, 9), 40)]);
   const reRated = { ...p, rating: 'hard' }; // same day, different duration
   const plan = planSchedule(prev, [reRated], SETTINGS, time(0, 9, 10));
@@ -305,7 +305,7 @@ test('started blocks stay frozen when the layout changes; the rest are re-placed
   const b = problem('waiting-b', { due: day(0), ratedAt: ratedAt + 1 });
   const c = problem('tomorrow-c', { due: day(1), ratedAt });
   const prev = schedule([slot(a, time(0, 9), 40), slot(b, time(0, 9, 40), 40), slot(c, time(1, 9), 40)]);
-  const settings = withSettings({ startTime: '08:00', durations: { medium: 30 } });
+  const settings = withSettings({ startTime: '08:00', durations: { okay: 30 } });
 
   const plan = planSchedule(prev, [a, b, c], settings, time(0, 9, 10));
   assert.notEqual(plan.layoutKey, prev.layoutKey);
@@ -327,7 +327,7 @@ test('a new start time or duration re-places every upcoming block', () => {
   const ratedAt = time(-1, 9);
   const problems = [
     problem('a', { due: day(1), rating: 'easy', ratedAt }),
-    problem('b', { due: day(1), rating: 'medium', ratedAt }),
+    problem('b', { due: day(1), rating: 'okay', ratedAt }),
     problem('c', { due: day(3), rating: 'hard', ratedAt }),
   ];
   const now = time(0, 8);
@@ -348,7 +348,7 @@ test('planning again with nothing changed returns the same plan', () => {
   const problems = [
     problem('a', { due: day(0), rating: 'hard' }),
     problem('b', { due: day(1), rating: 'easy' }),
-    problem('c', { due: day(1), rating: 'medium' }),
+    problem('c', { due: day(1), rating: 'okay' }),
   ];
   const first = planSchedule(null, problems, SETTINGS, time(0, 10, 7));
   assert.deepEqual(planSchedule(first, problems, SETTINGS, time(0, 10, 7)), first);
@@ -360,10 +360,10 @@ test('planning again with nothing changed returns the same plan', () => {
 
 test('a different duration on the same day re-places the block', () => {
   const p = problem('p', { due: day(5), rating: 'easy', ratedAt: time(-2, 9) });
-  const q = problem('q', { due: day(5), rating: 'medium', ratedAt: time(-1, 9) });
+  const q = problem('q', { due: day(5), rating: 'okay', ratedAt: time(-1, 9) });
   const prev = schedule([slot(p, time(5, 9), 20), slot(q, time(5, 9, 20), 40)]);
-  // Solved again and rated Medium, landing on the same review day.
-  const reRated = { ...p, rating: 'medium', history: [...p.history, { at: time(2, 9), rating: 'medium', commitSha: null }] };
+  // Solved again and rated Okay, landing on the same review day.
+  const reRated = { ...p, rating: 'okay', history: [...p.history, { at: time(2, 9), rating: 'okay', commitSha: null }] };
   const plan = planSchedule(prev, [reRated, q], SETTINGS, time(2, 9, 30));
   assert.deepEqual(placements(plan), {
     q: `${dayKey(day(5))} 09:20+40`, // kept
@@ -407,7 +407,7 @@ test("today's first block starts at the next 5 minutes after now, never earlier"
 });
 
 test('late in the day the block runs past midnight but keeps its review day', () => {
-  const p = problem('late', { due: day(0), rating: 'medium' });
+  const p = problem('late', { due: day(0), rating: 'okay' });
   const s = planSchedule(null, [p], SETTINGS, time(0, 23, 58)).entries.late;
   assert.equal(s.start, time(1, 0, 0));
   assert.equal(s.day, dayKey(day(0)));
@@ -439,7 +439,7 @@ test('overdue problems without a block get none', () => {
 });
 
 test('an overdue problem keeps its started block, even after layout changes', () => {
-  const overdue = problem('overdue', { due: day(-1), rating: 'medium' });
+  const overdue = problem('overdue', { due: day(-1), rating: 'okay' });
   const prev = schedule([slot(overdue, time(-1, 9), 40)]);
   const reRated = { ...overdue, rating: 'hard' };
   const plan = planSchedule(prev, [reRated], withSettings({ startTime: '06:00', durations: { hard: 90 } }), time(0, 8));
@@ -486,7 +486,7 @@ test("a started block that no connected calendar holds is placed again from now"
 });
 
 test('a started block stays frozen when a calendar holds it, or when none is connected', () => {
-  const p = problem('a', { due: day(0), rating: 'medium' });
+  const p = problem('a', { due: day(0), rating: 'okay' });
   const prev = schedule([slot(p, time(0, 9), 40)]);
   // Google has it; Apple, connected later, must not move it.
   assert.deepEqual(planSchedule(prev, [p], SETTINGS, time(0, 15), { booked: new Set(['a']) }), prev);
@@ -504,7 +504,7 @@ test('a started block stays frozen when a calendar holds it, or when none is con
 test('a review keeps its day (and its block) when the time zone changes', () => {
   const rated = Date.UTC(2026, 10, 9, 18); // Mon 9 Nov, 12:00 in Chicago
   const p = withTimeZone('America/Chicago', () =>
-    createProblem({ id: 'two-sum', title: 'Two Sum', url: 'https://leetcode.com/problems/two-sum/', rating: 'medium', solvedAt: rated }),
+    createProblem({ id: 'two-sum', title: 'Two Sum', url: 'https://leetcode.com/problems/two-sum/', rating: 'okay', solvedAt: rated }),
   );
   assert.equal(p.dueDay, '2026-11-12');
   const plan = withTimeZone('America/Chicago', () => planSchedule(null, [p], SETTINGS, rated + HOUR));
@@ -566,8 +566,8 @@ test('planSchedule is deterministic and does not mutate its inputs', () => {
   const problems = [
     problem('a', { due: day(0), rating: 'easy', ratedAt }),
     problem('b', { due: day(1), rating: 'hard', ratedAt }),
-    problem('c', { due: day(1), rating: 'medium', ratedAt }),
-    problem('d', { due: day(-1), rating: 'medium', ratedAt }),
+    problem('c', { due: day(1), rating: 'okay', ratedAt }),
+    problem('d', { due: day(-1), rating: 'okay', ratedAt }),
   ];
   const prev = schedule([slot(problems[1], time(1, 10), 60), slot(problems[3], time(-1, 9), 40)]);
   const snapshot = structuredClone({ prev, problems, settings: SETTINGS });
@@ -613,12 +613,12 @@ test('missing or invalid settings fall back to the defaults', () => {
 
 test('works with problems from srs.js (createProblem / recordReview)', () => {
   const solvedAt = time(-2, 21, 15);
-  const p = createProblem({ id: 'two-sum', title: 'Two Sum', url: 'https://leetcode.com/problems/two-sum/', rating: 'medium', solvedAt });
+  const p = createProblem({ id: 'two-sum', title: 'Two Sum', url: 'https://leetcode.com/problems/two-sum/', rating: 'okay', solvedAt });
   const plan = planSchedule(null, [p], SETTINGS, time(0, 8));
   assert.equal(plan.entries['two-sum'].start, time(1, 9)); // 3 days after the solve day
   const reviewed = recordReview(p, 'easy', { at: time(1, 9, 20) });
   const next = planSchedule(plan, [reviewed], SETTINGS, time(1, 9, 25));
-  assert.equal(next.entries['two-sum'].start, time(8, 9));
+  assert.equal(next.entries['two-sum'].start, time(9, 9)); // 3-day interval × 2.5 for Easy, rounded
   assert.equal(next.entries['two-sum'].end - next.entries['two-sum'].start, 20 * MIN);
 });
 
@@ -627,8 +627,8 @@ test('works with problems from srs.js (createProblem / recordReview)', () => {
 test('places blocks at the local start time across the US DST change (America/Denver)', () => {
   withTimeZone('America/Denver', () => {
     const now = at(2026, 10, 27, 12);
-    // Solved at noon local; Medium is due 3 days later, Hard 1 day later.
-    const solve = (id, d, rating = 'medium') =>
+    // Solved at noon local; Okay is due 3 days later, Hard 1 day later.
+    const solve = (id, d, rating = 'okay') =>
       createProblem({ id, title: id, url: `https://leetcode.com/problems/${id}/`, rating, solvedAt: at(2026, 10, d, 12) });
     const problems = [solve('oct-31', 28), solve('nov-01-a', 29), solve('nov-01-b', 31, 'hard'), solve('nov-02', 30)];
     const plan = planSchedule(null, problems, SETTINGS, now);
@@ -650,7 +650,7 @@ test('places blocks at the local start time across the US DST change (America/De
     assert.equal(repeated.end - repeated.start, 40 * MIN);
 
     // A start time skipped by spring-forward (2026-03-08 02:30) still gives a valid block that day.
-    const spring = createProblem({ id: 'spring', title: 'Spring', url: 'u', rating: 'medium', solvedAt: at(2026, 3, 5, 12) });
+    const spring = createProblem({ id: 'spring', title: 'Spring', url: 'u', rating: 'okay', solvedAt: at(2026, 3, 5, 12) });
     const skipped = planSchedule(null, [spring], withSettings({ startTime: '02:30' }), at(2026, 3, 1)).entries.spring;
     assert.equal(skipped.day, '2026-03-08');
     assert.equal(dayKey(skipped.start), '2026-03-08');
@@ -712,7 +712,7 @@ test('the same local scenario plans identically in every zone', () => {
       const problems = [
         kept,
         problem('today', { due: day(0), rating: 'easy', ratedAt }),
-        problem('fits', { due: day(1), rating: 'medium', ratedAt: ratedAt + 1 }),
+        problem('fits', { due: day(1), rating: 'okay', ratedAt: ratedAt + 1 }),
         problem('after', { due: day(1), rating: 'hard', ratedAt: ratedAt + 2 }),
       ];
       return placements(planSchedule(prev, problems, SETTINGS, time(0, 13, 21)));
@@ -895,7 +895,7 @@ function fakeCalendar() {
 test('sync lifecycle: connect, re-rate, review, delete', () => {
   const cal = fakeCalendar();
   let problems = {
-    a: problem('a', { due: day(1), rating: 'medium', ratedAt: time(-2, 9) }),
+    a: problem('a', { due: day(1), rating: 'okay', ratedAt: time(-2, 9) }),
     b: problem('b', { due: day(3), rating: 'easy', ratedAt: time(-2, 10) }),
   };
   let settings = SETTINGS;
@@ -940,7 +940,7 @@ test('sync lifecycle: connect, re-rate, review, delete', () => {
 
 test('sync lifecycle: settings change and a missed review', () => {
   const cal = fakeCalendar();
-  const problems = [problem('a', { due: day(1), rating: 'medium' }), problem('b', { due: day(2), rating: 'easy' })];
+  const problems = [problem('a', { due: day(1), rating: 'okay' }), problem('b', { due: day(2), rating: 'easy' })];
   let plan = planSchedule(null, problems, SETTINGS, time(0, 8));
   cal.apply(diffEvents(plan.entries, cal.stored, time(0, 8)));
 

@@ -215,12 +215,12 @@ const problem = (id, title, dueAt) => ({
   id,
   title,
   url: `https://leetcode.com/problems/${id}/`,
-  rating: 'medium',
+  rating: 'okay',
   solvedAt: dueAt - 3 * 86400000,
   dueAt,
   commitSha: null,
   source: 'leetcode',
-  history: [{ at: dueAt - 3 * 86400000, rating: 'medium', commitSha: null }],
+  history: [{ at: dueAt - 3 * 86400000, rating: 'okay', commitSha: null }],
 });
 
 test('a test notification shows the soonest review without changing it', async () => {

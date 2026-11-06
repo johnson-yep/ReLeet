@@ -40,7 +40,7 @@
 
   const RATINGS = [
     { rating: 'easy', label: 'Easy', days: 7 },
-    { rating: 'medium', label: 'Medium', days: 3 },
+    { rating: 'okay', label: 'Okay', days: 3 },
     { rating: 'hard', label: 'Hard', days: 1 },
   ];
 
@@ -398,7 +398,7 @@
     .rate:focus-visible { outline-color: var(--tone); }
     .rate .days { font-weight: 500; opacity: 0.8; }
     .easy { --tone: var(--easy); --text: var(--easy-text); }
-    .medium { --tone: var(--medium); --text: var(--medium-text); }
+    .okay { --tone: var(--medium); --text: var(--medium-text); }
     .hard { --tone: var(--hard); --text: var(--hard-text); }
     .footer {
       display: flex;

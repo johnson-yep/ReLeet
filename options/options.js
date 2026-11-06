@@ -13,7 +13,7 @@ const $ = (id) => document.getElementById(id);
 
 const MIN_DURATION = 5;
 const MAX_DURATION = 240;
-const RATINGS = ['easy', 'medium', 'hard'];
+const RATINGS = ['easy', 'okay', 'hard'];
 
 let settings = null;
 let leetcode = {};

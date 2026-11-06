@@ -8,7 +8,7 @@ import {
   onPendingChanged,
   onSettingsChanged,
 } from './lib/storage.js';
-import { isDue, nextDueAfter, compareDue } from './lib/srs.js';
+import { RATINGS, isDue, nextDueAfter, compareDue } from './lib/srs.js';
 import { ratePending } from './lib/rating.js';
 import {
   SYNC_INTERVAL_MINUTES,
@@ -96,7 +96,7 @@ function scheduleSettingsChanged(next, prev) {
   return (
     next.startTime !== prev.startTime ||
     next.reminderMinutes !== prev.reminderMinutes ||
-    ['easy', 'medium', 'hard'].some((r) => next.durations[r] !== prev.durations[r])
+    RATINGS.some((r) => next.durations[r] !== prev.durations[r])
   );
 }
 

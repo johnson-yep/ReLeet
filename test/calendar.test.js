@@ -6,7 +6,7 @@ import { dayKey, planSchedule } from '../lib/schedule.js';
 const MIN = 60_000;
 const SETTINGS = Object.freeze({
   startTime: '09:00',
-  durations: Object.freeze({ easy: 20, medium: 40, hard: 60 }),
+  durations: Object.freeze({ easy: 20, okay: 40, hard: 60 }),
   reminderMinutes: 15,
 });
 const CREATED_AT = Date.UTC(2026, 10, 4, 15, 4, 5);
@@ -32,9 +32,9 @@ function makeSlot(overrides = {}) {
     start,
     end: start + 40 * MIN,
     title: 'Review: Two Sum',
-    description: 'Review Two Sum (last rated Medium).\nhttps://leetcode.com/problems/two-sum/\n\nScheduled by ReLeet.',
+    description: 'Review Two Sum (last rated Okay).\nhttps://leetcode.com/problems/two-sum/\n\nScheduled by ReLeet.',
     url: 'https://leetcode.com/problems/two-sum/',
-    rating: 'medium',
+    rating: 'okay',
     reminderMinutes: 15,
     ...overrides,
   };
@@ -44,12 +44,12 @@ const problem = (overrides = {}) => ({
   id: 'two-sum',
   title: 'Two Sum',
   url: 'https://leetcode.com/problems/two-sum/',
-  rating: 'medium',
+  rating: 'okay',
   solvedAt: at(2026, 11, 2, 12),
   dueAt: at(2026, 11, 5),
   commitSha: null,
   source: 'leetcode',
-  history: [{ at: at(2026, 11, 2, 12), rating: 'medium', commitSha: null }],
+  history: [{ at: at(2026, 11, 2, 12), rating: 'okay', commitSha: null }],
   ...overrides,
 });
 
@@ -94,7 +94,7 @@ test('buildEventIcs writes a complete VCALENDAR with CRLF line endings', () => {
     'UID:abc-123@releet',
     'DTSTAMP:20261104T150405Z',
     'SUMMARY:Review: Two Sum',
-    'DESCRIPTION:Review Two Sum (last rated Medium).\\nhttps://leetcode.com/problems/two-sum/\\n\\nScheduled by ReLeet.',
+    'DESCRIPTION:Review Two Sum (last rated Okay).\\nhttps://leetcode.com/problems/two-sum/\\n\\nScheduled by ReLeet.',
     'URL:https://leetcode.com/problems/two-sum/',
     'STATUS:CONFIRMED',
     'TRANSP:OPAQUE',
@@ -352,12 +352,12 @@ test('slotForProblem matches the schedule for an upcoming review', () => {
   assert.equal(s.end, at(2026, 11, 5, 9, 40));
   assert.equal(s.day, '2026-11-05');
   assert.equal(s.title, 'Review: Two Sum');
-  assert.equal(s.description, 'Review Two Sum (last rated Medium).\nhttps://leetcode.com/problems/two-sum/\n\nScheduled by ReLeet.');
+  assert.equal(s.description, 'Review Two Sum (last rated Okay).\nhttps://leetcode.com/problems/two-sum/\n\nScheduled by ReLeet.');
   assert.equal(s.reminderMinutes, 15);
 });
 
 test('slotForProblem uses the start time, duration and reminder from settings', () => {
-  const settings = { startTime: '07:15', durations: { easy: 20, medium: 40, hard: 75 }, reminderMinutes: 5 };
+  const settings = { startTime: '07:15', durations: { easy: 20, okay: 40, hard: 75 }, reminderMinutes: 5 };
   const s = slotForProblem(problem({ rating: 'hard' }), settings, at(2026, 11, 4, 8));
   assert.equal(s.start, at(2026, 11, 5, 7, 15));
   assert.equal(s.end, at(2026, 11, 5, 8, 30));

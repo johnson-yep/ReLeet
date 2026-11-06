@@ -71,7 +71,7 @@ fieldset.field-row legend { padding: 0; margin-bottom: 6px; }
 .duration { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
 .duration input { width: 64px; font-weight: normal; }
 .duration.easy { color: var(--easy-text); }
-.duration.medium { color: var(--medium-text); }
+.duration.okay { color: var(--medium-text); }
 .duration.hard { color: var(--hard-text); }
 .duration .unit { color: var(--muted); font-weight: normal; }
 .setup-needed { color: var(--fg); }

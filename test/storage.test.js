@@ -9,7 +9,7 @@ test('getSettings fills defaults, including nested durations', async () => {
   chrome.reset({ settings: { startTime: '07:30', durations: { hard: 90 } } });
   const s = await storage.getSettings();
   assert.equal(s.startTime, '07:30');
-  assert.deepEqual(s.durations, { easy: 20, medium: 40, hard: 90 });
+  assert.deepEqual(s.durations, { easy: 20, okay: 40, hard: 90 });
   assert.equal(s.reminderMinutes, 15);
 });
 

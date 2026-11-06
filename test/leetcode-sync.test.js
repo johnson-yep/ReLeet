@@ -43,12 +43,12 @@ const problem = (id, historyAts) => ({
   id,
   title: id,
   url: `https://leetcode.com/problems/${id}/`,
-  rating: 'medium',
+  rating: 'okay',
   solvedAt: historyAts[0],
   dueAt: historyAts.at(-1) + 3 * 24 * HOUR,
   commitSha: null,
   source: 'leetcode',
-  history: historyAts.map((at) => ({ at, rating: 'medium', commitSha: null })),
+  history: historyAts.map((at) => ({ at, rating: 'okay', commitSha: null })),
 });
 
 beforeEach(() => {

@@ -100,7 +100,7 @@ button {
 button:hover { border-color: var(--muted); }
 
 .rating.easy { color: var(--easy-text); }
-.rating.medium { color: var(--medium-text); }
+.rating.okay { color: var(--medium-text); }
 .rating.hard { color: var(--hard-text); }
 .icon-btn { color: var(--muted); padding: 3px 6px; }
 

@@ -178,8 +178,8 @@ test('first connect creates an event for every upcoming review, none for overdue
   await setProblems(
     problem('two-sum', 'easy', 1),
     problem('lru-cache', 'hard', 1),
-    problem('jump-game', 'medium', 3),
-    problem('overdue', 'medium', -2),
+    problem('jump-game', 'okay', 3),
+    problem('overdue', 'okay', -2),
   );
 
   const res = await sync.connectCalendar('google');
@@ -256,7 +256,7 @@ test('a failed reconnect leaves the previous connection exactly as it was', asyn
 
 test('reconnecting keeps the calendar and its events, so nothing is duplicated', async () => {
   const sync = makeSync();
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   await sync.connectCalendar('google');
   const before = stored('google');
   await storage.updateCalendarState('google', (s) => ({ ...s, needsReconnect: true, lastError: 'expired' }));
@@ -278,7 +278,7 @@ for (const name of ['apple', 'google']) {
     // iCloud finds an existing "ReLeet" calendar by name; Google can't.
     accounts[name].reuseByName = name !== 'google';
     const credentials = name === 'apple' ? { appleId: 'me@icloud.com', appPassword: 'x' } : undefined;
-    await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2), problem('c', 'hard', 3));
+    await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2), problem('c', 'hard', 3));
     await sync.connectCalendar(name, credentials);
     const before = stored(name);
 
@@ -303,7 +303,7 @@ for (const name of ['apple', 'google']) {
 test('a "ReLeet" calendar found again without a stored map gets its upcoming events replaced, not doubled', async () => {
   const sync = makeSync();
   accounts.apple.reuseByName = true;
-  const problems = [problem('a', 'easy', 0), problem('b', 'medium', 1), problem('c', 'hard', 2)];
+  const problems = [problem('a', 'easy', 0), problem('b', 'okay', 1), problem('c', 'hard', 2)];
   await setProblems(...problems);
   await sync.connectCalendar('apple');
   const calendarId = stored('apple').calendarId;
@@ -394,11 +394,11 @@ test('an unconfigured provider explains what is missing and never signs in', asy
 test('re-rating moves the event in place', async () => {
   const sync = makeSync();
   const p = problem('two-sum', 'easy', 3);
-  await setProblems(p, problem('jump-game', 'medium', 2));
+  await setProblems(p, problem('jump-game', 'okay', 2));
   await sync.connectCalendar('google');
   const before = stored('google').events['two-sum'];
 
-  await setProblems({ ...p, rating: 'hard', dueAt: at(1) }, problem('jump-game', 'medium', 2));
+  await setProblems({ ...p, rating: 'hard', dueAt: at(1) }, problem('jump-game', 'okay', 2));
   const res = await sync.syncCalendars();
 
   assert.equal(res.status, 'ok');
@@ -412,7 +412,7 @@ test('re-rating moves the event in place', async () => {
 
 test('deleting a problem deletes its event', async () => {
   const sync = makeSync();
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   await sync.connectCalendar('google');
   const ref = stored('google').events['jump-game'];
 
@@ -434,13 +434,13 @@ test('a finished review leaves its started event as history and creates the next
   assert.equal(old.start, at(0, 9));
 
   clock = at(0, 9, 10); // the block has started; the review is done
-  await setProblems(recordReview(p, 'medium', { at: clock }));
+  await setProblems(recordReview(p, 'okay', { at: clock }));
   const res = await sync.syncCalendars();
 
   assert.deepEqual(res.results.google, { created: 1, updated: 0, removed: 0, forgotten: 1, error: null });
   const next = stored('google').events['two-sum'];
   assert.notEqual(next.id, old.id);
-  assert.equal(next.day, schedule.dayKey(at(3)));
+  assert.equal(next.day, schedule.dayKey(at(5))); // 3-day interval × 1.5 for Okay
   // The old event stays on the calendar untouched.
   assert.equal(accounts.google.events().get(old.id).start, at(0, 9));
   assert.equal(accounts.google.events().size, 2);
@@ -466,12 +466,12 @@ test('an event deleted in the calendar app is recreated when it needs an update'
 
 test('a calendar deleted mid-sync is recreated once with every event', async () => {
   const sync = makeSync();
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   await sync.connectCalendar('google');
   const oldCalendar = stored('google').calendarId;
 
   // The user deletes the calendar right after ensureCalendar said it exists.
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2), problem('lru-cache', 'hard', 3));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2), problem('lru-cache', 'hard', 3));
   accounts.google.before = (op) => {
     if (op === 'createEvent') {
       accounts.google.calendars.delete(oldCalendar);
@@ -497,7 +497,7 @@ test('a calendar that keeps going missing is retried only once, then reported', 
   const sync = makeSync();
   await setProblems(problem('two-sum', 'easy', 1));
   await sync.connectCalendar('google');
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
 
   accounts.google.before = (op) => {
     if (op === 'createEvent') throw new CalendarError('The ReLeet calendar is gone.', { calendarMissing: true });
@@ -515,11 +515,11 @@ test('a calendar that keeps going missing is retried only once, then reported', 
 test('a stray "calendar gone" answer for a calendar that still exists keeps its events', async () => {
   const sync = makeSync();
   accounts.apple.reuseByName = true;
-  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2));
+  await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2));
   await sync.connectCalendar('apple');
   const calendarId = stored('apple').calendarId;
 
-  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2), problem('c', 'hard', 3));
+  await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2), problem('c', 'hard', 3));
   let once = true;
   accounts.apple.before = (op) => {
     if (op === 'createEvent' && once) {
@@ -538,7 +538,7 @@ test('a stray "calendar gone" answer for a calendar that still exists keeps its 
 
 test('an event whose create answer was lost is deleted before the next sync creates it again', async () => {
   const sync = makeSync();
-  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2));
+  await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2));
   await sync.connectCalendar('google');
   const real = accounts.google.provider;
   accounts.google.makeProvider = async () => ({
@@ -548,7 +548,7 @@ test('an event whose create answer was lost is deleted before the next sync crea
       throw new CalendarError("Google Calendar didn't respond in time."); // …but the answer never came
     },
   });
-  await setProblems(problem('a', 'easy', 1), problem('b', 'medium', 2), problem('c', 'hard', 3));
+  await setProblems(problem('a', 'easy', 1), problem('b', 'okay', 2), problem('c', 'hard', 3));
   assert.equal((await sync.syncCalendars()).results.google.error, "Google Calendar didn't respond in time.");
   assert.equal(stored('google').checkStrays, true);
   assert.equal(accounts.google.events().size, 3);
@@ -570,7 +570,7 @@ test('an event whose create answer was lost is deleted before the next sync crea
 test('a calendar that was failing while a block moved catches up, even after the old time passed', async () => {
   const sync = makeSync();
   clock = at(0, 7);
-  await setProblems(problem('a', 'medium', 0), problem('b', 'easy', 0));
+  await setProblems(problem('a', 'okay', 0), problem('b', 'easy', 0));
   await sync.connectCalendar('google');
   await sync.connectCalendar('apple');
   assert.equal(stored('apple').events.a.start, at(0, 9));
@@ -579,7 +579,7 @@ test('a calendar that was failing while a block moved catches up, even after the
   clock = at(0, 7, 5);
   accounts.apple.signedIn = false;
   await storage.updateSettings({ startTime: '13:00' });
-  await setProblems(problem('a', 'medium', 0));
+  await setProblems(problem('a', 'okay', 0));
   await sync.syncCalendars();
   assert.equal(stored('google').events.a.start, at(0, 13));
 
@@ -601,7 +601,7 @@ test('a sign-in error marks only that provider for reconnect; the others keep sy
 
   clock += 60 * 1000;
   accounts.google.signedIn = false;
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   const res = await sync.syncCalendars();
 
   assert.equal(res.status, 'error');
@@ -679,7 +679,7 @@ test('calls during a run share one rerun, which sees the changes made meanwhile'
   const first = sync.syncCalendars();
   await until(() => accounts.google.calls.length === 1);
 
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   const second = sync.syncCalendars();
   const third = sync.syncCalendars();
   assert.equal(second, third);
@@ -699,7 +699,7 @@ test('calls during a run share one rerun, which sees the changes made meanwhile'
 
 test('the schedule is saved only when the plan changed', async () => {
   const sync = makeSync();
-  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'easy', 1), problem('jump-game', 'okay', 2));
   let writes = 0;
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.schedule) writes++;
@@ -714,7 +714,7 @@ test('the schedule is saved only when the plan changed', async () => {
   await sync.syncCalendars();
   assert.equal(counts.saveSchedule, 1);
 
-  await setProblems(problem('two-sum', 'hard', 1), problem('jump-game', 'medium', 2));
+  await setProblems(problem('two-sum', 'hard', 1), problem('jump-game', 'okay', 2));
   await sync.syncCalendars();
   assert.equal(counts.saveSchedule, 2);
   assert.equal(writes, 2);

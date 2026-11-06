@@ -1,7 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  MAX_INTERVAL,
   createProblem,
+  currentInterval,
+  daysBetween,
+  isMastered,
+  markMastered,
+  nextInterval,
+  resumeProblem,
   dayKey,
   dayStartMs,
   groupByDue,
@@ -22,11 +29,11 @@ function withTimeZone(tz, fn) {
   }
 }
 
-// Rated Medium on Mon 9 Nov 2026 at 12:00 in Chicago → review on Thu 12 Nov.
+// Rated Okay on Mon 9 Nov 2026 at 12:00 in Chicago → review on Thu 12 Nov.
 const RATED = Date.UTC(2026, 10, 9, 18);
 const make = () =>
   withTimeZone('America/Chicago', () =>
-    createProblem({ id: 'two-sum', title: 'Two Sum', url: 'https://leetcode.com/problems/two-sum/', rating: 'medium', solvedAt: RATED }),
+    createProblem({ id: 'two-sum', title: 'Two Sum', url: 'https://leetcode.com/problems/two-sum/', rating: 'okay', solvedAt: RATED }),
   );
 
 test('createProblem and recordReview store the review day next to dueAt', () => {
@@ -84,4 +91,91 @@ test('groupByDue sorts by review day, then due time; nextDueAfter skips broken p
     assert.equal(dayStartMs('2026-12-02'), Date.UTC(2026, 11, 2));
     assert.equal(nextDueAfter([], now), null);
   });
+});
+
+// Intervals
+
+const at = (day, hour = 12) => new Date(`${day}T${String(hour).padStart(2, '0')}:00:00`).getTime();
+const tracked = (interval, rating = 'okay') =>
+  withTimeZone('UTC', () => ({
+    ...createProblem({ id: 'p', title: 'P', url: 'u', rating, solvedAt: at('2026-01-01') }),
+    interval,
+  }));
+
+test('a first solve gets 7, 3 or 1 days', () => {
+  assert.deepEqual(nextInterval(null, 'easy'), { days: 7, capped: false });
+  assert.deepEqual(nextInterval(null, 'okay'), { days: 3, capped: false });
+  assert.deepEqual(nextInterval(null, 'hard'), { days: 1, capped: false });
+  assert.throws(() => nextInterval(null, 'medium'), /Unknown rating/);
+});
+
+test('reviews grow the interval: Easy × 2.5, Okay × 1.5, Hard back to 1, rounded to whole days', () => {
+  assert.equal(nextInterval(tracked(3), 'easy').days, 8); // 7.5
+  assert.equal(nextInterval(tracked(3), 'okay').days, 5); // 4.5
+  assert.equal(nextInterval(tracked(1), 'okay').days, 2); // 1.5
+  assert.equal(nextInterval(tracked(1), 'easy').days, 3); // 2.5
+  assert.equal(nextInterval(tracked(40), 'hard').days, 1);
+});
+
+test('intervals stop at 180 days, and reaching it is flagged so ReLeet can suggest Mastered', () => {
+  assert.deepEqual(nextInterval(tracked(71), 'easy'), { days: 178, capped: false });
+  assert.deepEqual(nextInterval(tracked(72), 'easy'), { days: 180, capped: true });
+  assert.deepEqual(nextInterval(tracked(150), 'okay'), { days: 180, capped: true });
+  assert.deepEqual(nextInterval(tracked(MAX_INTERVAL), 'hard'), { days: 1, capped: false });
+});
+
+test('createProblem and recordReview store the interval and keep every rating in the history', () => {
+  withTimeZone('UTC', () => {
+    const p = createProblem({ id: 'p', title: 'P', url: 'u', rating: 'okay', solvedAt: at('2026-01-01') });
+    assert.equal(p.interval, 3);
+    assert.equal(p.dueDay, '2026-01-04');
+    const easy = recordReview(p, 'easy', { at: at('2026-01-04', 20) });
+    assert.equal(easy.interval, 8);
+    assert.equal(easy.dueDay, '2026-01-12');
+    const hard = recordReview(easy, 'hard', { at: at('2026-01-13') });
+    assert.equal(hard.interval, 1);
+    assert.deepEqual(hard.history.map((h) => h.rating), ['okay', 'easy', 'hard']);
+  });
+});
+
+test('problems saved without an interval take the gap from their last rating to their review day', () => {
+  const legacy = { rating: 'easy', solvedAt: at('2026-03-01'), dueDay: '2026-03-16', history: [
+    { at: at('2026-03-01'), rating: 'okay' },
+    { at: at('2026-03-09', 23), rating: 'easy' },
+  ] };
+  assert.equal(currentInterval(legacy), 7);
+  assert.equal(nextInterval(legacy, 'okay').days, 11); // 10.5
+  // A review day on or before the rating day still counts as a one-day interval.
+  assert.equal(currentInterval({ ...legacy, dueDay: '2026-03-09' }), 1);
+  assert.equal(currentInterval({ ...legacy, interval: 400 }), MAX_INTERVAL);
+});
+
+test('daysBetween counts calendar days across DST changes', () => {
+  withTimeZone('America/Denver', () => {
+    assert.equal(daysBetween('2026-10-31', '2026-11-02'), 2);
+    assert.equal(daysBetween('2026-03-07', '2026-03-09'), 2);
+    assert.equal(daysBetween('2026-03-09', '2026-03-07'), -2);
+  });
+});
+
+test('mastering keeps history and interval; resuming gives today plus the last interval, capped at 180', () => {
+  withTimeZone('UTC', () => {
+    const p = tracked(120);
+    const mastered = markMastered(p, at('2026-02-01'));
+    assert.equal(isMastered(mastered), true);
+    assert.deepEqual(mastered.history, p.history);
+    assert.equal(mastered.interval, 120);
+
+    const resumed = resumeProblem(mastered, at('2026-06-01', 18));
+    assert.equal(isMastered(resumed), false);
+    assert.equal(Object.hasOwn(resumed, 'masteredAt'), false);
+    assert.equal(resumed.dueDay, '2026-09-29'); // June 1 + 120 days
+    assert.equal(resumeProblem(markMastered(tracked(400)), at('2026-06-01')).dueDay, '2026-11-28');
+  });
+});
+
+test('rating a mastered problem brings it back into review', () => {
+  const reviewed = recordReview(markMastered(tracked(10)), 'okay', { at: at('2026-05-01') });
+  assert.equal(isMastered(reviewed), false);
+  assert.equal(reviewed.interval, 15);
 });
